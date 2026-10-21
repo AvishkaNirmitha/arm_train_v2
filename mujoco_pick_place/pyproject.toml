@@ -1,0 +1,12 @@
+[project]
+name = "mujoco-pick-place"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "lmdb>=2.2.0",
+    "mujoco>=3.8.1",
+    "opencv-contrib-python>=4.13.0.92",
+    "opencv-python>=4.13.0.92",
+]
