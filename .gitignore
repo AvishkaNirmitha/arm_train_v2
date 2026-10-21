@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Generated VLM datasets
+datasets/
+
+# Training outputs (LoRA adapters, trainer checkpoints)
+checkpoints/
+
+
+unsloth_compiled_cache/

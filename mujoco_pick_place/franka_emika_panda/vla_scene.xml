@@ -1,0 +1,22 @@
+<mujoco model="panda vla scene">
+  <!-- Scene for VLM joint-keyframe dataset generation (see expert.py).
+       5cm cube (fits the 8cm gripper opening with margin) + movable red place pad. -->
+  <include file="mjx_scene.xml"/>
+
+  <worldbody>
+    <body name="box" pos="0.55 0 0.025">
+      <freejoint name="box_joint"/>
+      <geom type="box" name="box" size="0.025 0.025 0.025" condim="3" mass="0.1"
+       friction="1 .03 .003" rgba="0 1 0 1" contype="2" conaffinity="1" solref="0.01 1"/>
+    </body>
+
+    <!-- Visual-only place target, moved per episode via mocap_pos -->
+    <body mocap="true" name="place_pad" pos="0.55 0.3 0">
+      <geom type="cylinder" size="0.045 0.001" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- Looks straight down over the workspace. Image right = robot's right (-y), image up = away from robot (+x) -->
+    <camera name="top_camera" pos="0.55 0 0.95" xyaxes="0 -1 0 1 0 0" fovy="42"/>
+    <camera name="front_camera" pos="1.5 0 0.8" xyaxes="0 1 0 -0.447 0 0.894" fovy="75"/>
+  </worldbody>
+</mujoco>

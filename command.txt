@@ -1,3 +1,7 @@
 source .venv/bin/activate
 
 
+this is how activate venv
+
+asus@asus-ASUS-TUF-Gaming-A15-FA507NVR-FA507NVR:~/Desktop/works/60_pick_place_advanced$ source .venv/bin/activate
+(.venv) asus@asus-ASUS-TUF-Gaming-A15-FA507NVR-FA507NVR:~/Desktop/works/60_pick_place_advanced$ 
