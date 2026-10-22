@@ -1,0 +1,193 @@
+<mujoco model="robotics_lab_workspace">
+  <compiler angle="degree" coordinate="local" inertiafromgeom="true"/>
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+
+  <visual>
+    <headlight diffuse="0.4 0.4 0.4" ambient="0.35 0.35 0.38" specular="0.2 0.2 0.2"/>
+    <global azimuth="105" elevation="-10" fovy="55"/>
+  </visual>
+
+  <asset>
+    <!-- Architectural Materials -->
+    <material name="mat_floor" rgba="0.22 0.23 0.25 1" specular="0.1" shininess="0.1"/>
+    <material name="mat_wall_right" rgba="0.48 0.51 0.53 1" specular="0.1"/>
+    <material name="mat_wall_back" rgba="0.38 0.40 0.42 1" specular="0.2"/>
+    <material name="mat_partition" rgba="0.52 0.54 0.56 1" specular="0.1"/>
+    <material name="mat_ceiling" rgba="0.55 0.57 0.59 1" specular="0.3"/>
+    <material name="mat_beam" rgba="0.15 0.16 0.18 1"/>
+    
+    <!-- Furniture & Equipment Materials -->
+    <material name="mat_desk_white" rgba="0.92 0.93 0.94 1" specular="0.4"/>
+    <material name="mat_chair_frame" rgba="0.78 0.80 0.82 1"/>
+    <material name="mat_chair_mesh" rgba="0.28 0.30 0.32 1"/>
+    <material name="mat_dark_screen" rgba="0.10 0.11 0.13 1" specular="0.8"/>
+    <material name="mat_mujoco_ui" rgba="0.18 0.15 0.20 1" emission="0.3"/>
+    <material name="mat_crane_red" rgba="0.85 0.12 0.15 1" specular="0.6"/>
+    <material name="mat_yellow_bottle" rgba="0.92 0.88 0.12 0.85" specular="0.8"/>
+    <material name="mat_ac_white" rgba="0.88 0.89 0.90 1"/>
+
+    <!-- Human / Clothing Materials -->
+    <material name="mat_skin" rgba="0.55 0.38 0.28 1"/>
+    <material name="mat_hair" rgba="0.12 0.12 0.12 1"/>
+    <material name="mat_shirt_dark" rgba="0.22 0.26 0.30 1"/>
+    <material name="mat_shirt_grey" rgba="0.68 0.70 0.72 1"/>
+    <material name="mat_shirt_white" rgba="0.92 0.92 0.94 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- ==================== CEILING LIGHTS & CAMERA ==================== -->
+    <light name="highbay_1" pos="-2.5 6.0 5.5" dir="0 0 -1" diffuse="0.9 0.9 0.95" specular="0.5 0.5 0.5" cutoff="75"/>
+    <light name="highbay_2" pos="-6.5 6.0 5.5" dir="0 0 -1" diffuse="0.8 0.8 0.85" specular="0.4 0.4 0.4" cutoff="75"/>
+    <!-- Glowing lamp fixtures -->
+    <geom name="lamp_1" type="sphere" pos="-2.5 6.0 5.6" size="0.22" rgba="1 1 1 1" contype="0" conaffinity="0"/>
+    <geom name="lamp_2" type="sphere" pos="-6.5 6.0 5.6" size="0.22" rgba="1 1 1 1" contype="0" conaffinity="0"/>
+
+    <!-- Camera matching the exact photo perspective -->
+    <camera name="pov_cam" pos="-0.4 0.0 1.25" euler="82 14 -6" fovy="58"/>
+
+    <!-- ==================== ARCHITECTURE (WALLS, FLOOR, CEILING) ==================== -->
+    <!-- Floor -->
+    <geom name="floor" type="box" pos="-4 6 -0.05" size="7 8 0.05" material="mat_floor"/>
+
+    <!-- Large Right Wall -->
+    <geom name="right_wall" type="box" pos="1.2 6 3.5" size="0.1 8 3.5" material="mat_wall_right"/>
+
+    <!-- High Back Wall (with dark panel grid lines) -->
+    <geom name="back_wall" type="box" pos="-4 13.5 3.5" size="6 0.1 3.5" material="mat_wall_back"/>
+    <geom name="grid_h1" type="box" pos="-4 13.38 4.2" size="5.5 0.02 0.02" material="mat_beam"/>
+    <geom name="grid_h2" type="box" pos="-4 13.38 5.4" size="5.5 0.02 0.02" material="mat_beam"/>
+    <geom name="grid_v1" type="box" pos="-1.5 13.38 4.8" size="0.02 0.02 1.8" material="mat_beam"/>
+    <geom name="grid_v2" type="box" pos="-3.5 13.38 4.8" size="0.02 0.02 1.8" material="mat_beam"/>
+    <geom name="grid_v3" type="box" pos="-5.5 13.38 4.8" size="0.02 0.02 1.8" material="mat_beam"/>
+
+    <!-- Lower Office Partition Box & Doorway -->
+    <body name="office_partition" pos="-2.0 9.5 0">
+      <geom name="part_front" type="box" pos="0.3 0 1.6" size="2.8 0.1 1.6" material="mat_partition"/>
+      <geom name="part_doorway" type="box" pos="-2.1 -0.02 1.1" size="0.45 0.12 1.1" material="mat_beam"/>
+    </body>
+
+    <!-- Sloped Corrugated Roof & Beams -->
+    <body name="roof" pos="-4 6 6.2" euler="0 -6 0">
+      <geom name="ceiling_slab" type="box" size="6 8 0.05" material="mat_ceiling"/>
+      <geom name="purlin_1" type="box" pos="-1 0 -0.08" size="0.04 8 0.04" material="mat_beam"/>
+      <geom name="purlin_2" type="box" pos="-3 0 -0.08" size="0.04 8 0.04" material="mat_beam"/>
+      <geom name="purlin_3" type="box" pos="-5 0 -0.08" size="0.04 8 0.04" material="mat_beam"/>
+    </body>
+
+    <!-- High Wall AC / Blower Unit (Upper Right Corner) -->
+    <body name="ac_unit" pos="0.85 9.2 4.7" euler="0 0 0">
+      <geom type="box" size="0.25 0.55 0.3" material="mat_ac_white"/>
+      <geom type="box" pos="-0.26 0 0" size="0.01 0.45 0.2" material="mat_beam"/>
+    </body>
+
+    <!-- Wall Power Socket Box (Right Wall near Midground Desk) -->
+    <body name="wall_socket" pos="1.08 4.2 1.15">
+      <geom type="box" size="0.06 0.12 0.15" material="mat_ac_white"/>
+      <geom type="cylinder" pos="-0.06 -0.03 -0.05" size="0.025 0.04" euler="0 45 0" rgba="0.8 0.2 0.2 1"/>
+      <geom type="cylinder" pos="-0.06 0.03 -0.05" size="0.025 0.04" euler="0 45 0" rgba="0.2 0.4 0.8 1"/>
+    </body>
+
+    <!-- ==================== FOREGROUND WORKSTATION (BOTTOM) ==================== -->
+    <body name="fg_desk" pos="-0.4 0.85 0">
+      <!-- Desk Top -->
+      <geom name="fg_tabletop" type="box" pos="0 0 0.74" size="1.1 0.4 0.02" material="mat_desk_white"/>
+      
+      <!-- Open Laptop (Bottom Right - Showing MuJoCo Window) -->
+      <body name="fg_laptop" pos="0.15 -0.05 0.76" euler="0 0 4">
+        <geom name="laptop_base" type="box" pos="0 -0.1 0.008" size="0.20 0.13 0.008" material="mat_chair_mesh"/>
+        <geom name="laptop_screen" type="box" pos="0 0.02 0.14" euler="-12 0 0" size="0.20 0.006 0.13" material="mat_dark_screen"/>
+        <geom name="laptop_display" type="box" pos="0 0.013 0.14" euler="-12 0 0" size="0.185 0.002 0.115" material="mat_mujoco_ui"/>
+      </body>
+
+      <!-- Secondary Laptop / Monitor (Bottom Left) -->
+      <geom name="fg_left_screen" type="box" pos="-0.42 -0.08 0.84" euler="-10 0 -8" size="0.14 0.006 0.09" material="mat_chair_mesh"/>
+
+      <!-- Yellow Water Bottle -->
+      <body name="yellow_bottle" pos="-0.20 0.02 0.86">
+        <geom type="cylinder" size="0.035 0.10" material="mat_yellow_bottle"/>
+        <geom type="cylinder" pos="0 0 0.11" size="0.025 0.015" rgba="0.95 0.9 0.1 1"/>
+      </body>
+
+      <!-- Colorful Notebook / Pad -->
+      <geom name="notebook" type="box" pos="-0.32 0.05 0.765" euler="0 0 18" size="0.09 0.12 0.005" rgba="0.9 0.3 0.4 1"/>
+    </body>
+
+    <!-- ==================== MIDGROUND WORKSTATION & PEOPLE ==================== -->
+    <body name="mg_workstation" pos="-0.5 4.2 0">
+      <!-- Shared White Desk Island -->
+      <geom name="mg_tabletop" type="box" pos="0 0 0.74" size="1.25 0.75 0.025" material="mat_desk_white"/>
+      <geom name="mg_leg_l" type="box" pos="-1.2 0 0.37" size="0.03 0.7 0.37" material="mat_chair_frame"/>
+      <geom name="mg_leg_r" type="box" pos="1.2 0 0.37" size="0.03 0.7 0.37" material="mat_chair_frame"/>
+
+      <!-- Desk Monitors -->
+      <geom name="mon_1" type="box" pos="-0.45 0.25 0.98" size="0.26 0.02 0.16" material="mat_ac_white"/>
+      <geom name="mon_2" type="box" pos="0.10 0.20 0.95" size="0.22 0.02 0.14" material="mat_chair_mesh"/>
+      <geom name="mon_3" type="box" pos="-0.25 0.85 0.98" size="0.22 0.02 0.15" material="mat_dark_screen"/>
+
+      <!-- Person 1 (Seated Left, turned slightly sideways) -->
+      <body name="person_seated_left" pos="-1.05 -0.35 0" euler="0 0 -55">
+        <!-- Office Chair -->
+        <geom name="c1_seat" type="box" pos="0 0 0.46" size="0.22 0.22 0.03" material="mat_chair_mesh"/>
+        <geom name="c1_back" type="box" pos="0 -0.22 0.75" size="0.20 0.025 0.26" material="mat_chair_frame"/>
+        <!-- Human Torso, Head & Arm -->
+        <geom name="p1_torso" type="capsule" fromto="0 -0.05 0.52 0 0 0.88" size="0.13" material="mat_shirt_dark"/>
+        <geom name="p1_head" type="sphere" pos="0 0.02 1.05" size="0.095" material="mat_skin"/>
+        <geom name="p1_hair" type="sphere" pos="0 0.0 1.08" size="0.095" material="mat_hair"/>
+        <geom name="p1_arm_r" type="capsule" fromto="-0.14 0 0.82 -0.25 -0.12 0.65" size="0.04" material="mat_skin"/>
+        <geom name="p1_arm_l" type="capsule" fromto="0.12 0.05 0.82 0.10 0.18 0.95" size="0.04" material="mat_skin"/>
+      </body>
+
+      <!-- Person 2 (Seated Center, facing desk, chair with headrest) -->
+      <body name="person_seated_center" pos="-0.35 -0.55 0">
+        <geom name="c2_seat" type="box" pos="0 0 0.46" size="0.23 0.22 0.03" material="mat_chair_mesh"/>
+        <geom name="c2_back" type="box" pos="0 -0.22 0.74" size="0.21 0.025 0.25" material="mat_chair_mesh"/>
+        <geom name="c2_frame" type="box" pos="0 -0.24 0.74" size="0.22 0.015 0.26" material="mat_chair_frame"/>
+        <geom name="c2_headrest" type="box" pos="0 -0.22 1.06" size="0.12 0.03 0.07" material="mat_chair_frame"/>
+        <geom name="p2_torso" type="capsule" fromto="0 -0.05 0.52 0 0 0.88" size="0.14" material="mat_shirt_grey"/>
+        <geom name="p2_head" type="sphere" pos="0 0.02 1.06" size="0.095" material="mat_hair"/>
+      </body>
+
+      <!-- Person 3 (Seated Right, facing desk, chair with headrest) -->
+      <body name="person_seated_right" pos="0.50 -0.50 0">
+        <geom name="c3_seat" type="box" pos="0 0 0.46" size="0.23 0.22 0.03" material="mat_chair_mesh"/>
+        <geom name="c3_back" type="box" pos="0 -0.22 0.74" size="0.21 0.025 0.25" material="mat_chair_mesh"/>
+        <geom name="c3_frame" type="box" pos="0 -0.24 0.74" size="0.22 0.015 0.26" material="mat_chair_frame"/>
+        <geom name="c3_headrest" type="box" pos="0 -0.22 1.06" size="0.12 0.03 0.07" material="mat_chair_frame"/>
+        <geom name="p3_torso" type="capsule" fromto="0 -0.05 0.52 0 0 0.88" size="0.13" material="mat_beam"/>
+        <geom name="p3_head" type="sphere" pos="0 0.02 1.06" size="0.095" material="mat_hair"/>
+      </body>
+    </body>
+
+    <!-- ==================== BACKGROUND LEFT: RED CRANE & WORKBENCH ==================== -->
+    <!-- Red Hydraulic Shop Crane (Engine Hoist) -->
+    <body name="red_shop_crane" pos="-4.5 5.8 0" euler="0 0 -25">
+      <!-- Base Legs -->
+      <geom name="crane_leg_l" type="box" pos="-0.35 0.4 0.06" size="0.05 0.65 0.04" material="mat_crane_red"/>
+      <geom name="crane_leg_r" type="box" pos="0.35 0.4 0.06" size="0.05 0.65 0.04" material="mat_crane_red"/>
+      <geom name="crane_cross" type="box" pos="0 -0.2 0.08" size="0.40 0.06 0.05" material="mat_crane_red"/>
+      <!-- Vertical Mast -->
+      <geom name="crane_mast" type="box" pos="0 -0.15 0.78" euler="-6 0 0" size="0.06 0.06 0.72" material="mat_crane_red"/>
+      <geom name="crane_strut" type="capsule" fromto="0 -0.35 0.1 0 -0.15 0.85" size="0.03" material="mat_crane_red"/>
+      <!-- Angled Boom & Telescopic Extension -->
+      <geom name="crane_boom" type="box" pos="0 0.25 1.55" euler="52 0 0" size="0.05 0.65 0.05" material="mat_crane_red"/>
+      <geom name="crane_ext" type="cylinder" fromto="0 0.65 1.85 0 1.25 2.25" size="0.025" material="mat_chair_frame"/>
+      <!-- Hydraulic Ram -->
+      <geom name="crane_ram" type="cylinder" fromto="0 -0.05 0.75 0 0.25 1.45" size="0.035" material="mat_crane_red"/>
+    </body>
+
+    <!-- Background White Workbench Frame (Left) -->
+    <body name="bg_workbench" pos="-4.8 8.2 0">
+      <geom type="box" pos="0 0 0.74" size="0.95 0.45 0.025" material="mat_desk_white"/>
+      <geom type="box" pos="0 -0.42 0.12" size="0.92 0.02 0.02" material="mat_desk_white"/>
+      <geom type="box" pos="-0.92 -0.42 0.38" size="0.02 0.02 0.36" material="mat_desk_white"/>
+      <geom type="box" pos="0.92 -0.42 0.38" size="0.02 0.02 0.36" material="mat_desk_white"/>
+    </body>
+
+    <!-- Standing Person in White Shirt (Near Doorway) -->
+    <body name="person_standing" pos="-3.2 7.5 0">
+      <geom name="ps_legs" type="capsule" fromto="0 0 0.05 0 0 0.85" size="0.11" material="mat_beam"/>
+      <geom name="ps_torso" type="capsule" fromto="0 0 0.90 0 0 1.42" size="0.15" material="mat_shirt_white"/>
+      <geom name="ps_head" type="sphere" pos="0 0 1.62" size="0.095" material="mat_hair"/>
+    </body>
+  </worldbody>
+</mujoco>

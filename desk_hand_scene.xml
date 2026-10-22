@@ -1,0 +1,177 @@
+<mujoco model="desk_hand_reconstruction">
+  <compiler angle="degree" coordinate="local" inertiafromgeom="true"/>
+  
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0.2 0.2 0.2"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="90" elevation="-65"/>
+  </visual>
+
+  <asset>
+    <material name="mat_desk" rgba="0.12 0.14 0.15 1" specular="0.4" shininess="0.3"/>
+    <material name="mat_cube" rgba="0.55 0.58 0.60 1" specular="0.1"/>
+    <material name="mat_skin" rgba="0.88 0.72 0.60 1" specular="0.1"/>
+    <material name="mat_skeleton" rgba="0.95 0.0 0.85 1" emission="0.4"/>
+    <material name="mat_tip" rgba="1.0 0.95 0.0 1" emission="0.6"/>
+    <material name="mat_mouse" rgba="0.18 0.20 0.22 1" specular="0.7"/>
+    <material name="mat_white_dev" rgba="0.92 0.94 0.95 1" specular="0.5"/>
+    <material name="mat_screen" rgba="0.55 0.62 0.62 1" specular="0.8"/>
+    <material name="mat_dark" rgba="0.15 0.16 0.18 1"/>
+    <material name="mat_cable" rgba="0.30 0.32 0.34 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Lighting -->
+    <light pos="0 0 1.2" dir="0 0 -1" directional="false" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
+
+    <!-- Top-down camera matching the image viewpoint -->
+    <camera name="top_cam" pos="0 -0.05 0.55" xyaxes="1 0 0 0 0.96 0.28" fovy="45"/>
+
+    <!-- Black Desk Surface -->
+    <geom name="desk_plane" type="box" pos="0 0 -0.01" size="0.45 0.35 0.01" material="mat_desk"/>
+
+    <!-- ==================== TARGET MANIPULATION CUBE ==================== -->
+    <body name="grey_cube" pos="0.06 -0.02 0.025">
+      <freejoint name="cube_free"/>
+      <geom name="cube_geom" type="box" size="0.024 0.024 0.024" euler="0 0 35" material="mat_cube" mass="0.08" friction="1.0 0.005 0.0001"/>
+    </body>
+
+    <!-- ==================== BACKGROUND DESK OBJECTS ==================== -->
+    <!-- Computer Mouse (top right of center) -->
+    <body name="mouse" pos="0.09 0.12 0.02" euler="0 0 2">
+      <geom name="mouse_body" type="ellipsoid" size="0.032 0.055 0.02" material="mat_mouse"/>
+      <geom name="scroll_wheel" type="cylinder" pos="0 0.025 0.016" size="0.008 0.003" euler="0 90 0" rgba="0.1 0.1 0.1 1"/>
+      <geom name="mouse_cord" type="capsule" fromto="0 -0.05 0.0 0.005 -0.12 -0.005" size="0.002" material="mat_dark"/>
+    </body>
+
+    <!-- ROG Ruler / Strip (left of mouse) -->
+    <body name="rog_strip" pos="0.025 0.14 0.001" euler="0 0 -2">
+      <geom type="box" size="0.013 0.065 0.001" material="mat_dark"/>
+      <geom type="box" size="0.011 0.063 0.0012" rgba="0.6 0.5 0.3 1"/>
+    </body>
+
+    <!-- White Remote / Device (right side) -->
+    <body name="white_remote" pos="0.21 0.02 0.01" euler="0 0 -42">
+      <geom name="remote_body" type="box" size="0.024 0.065 0.009" material="mat_white_dev"/>
+      <geom name="remote_screen" type="box" pos="0 -0.015 0.0091" size="0.017 0.019 0.001" material="mat_screen"/>
+    </body>
+
+    <!-- Keyboard & Mousepad (top-left & far-left) -->
+    <body name="keyboard" pos="-0.22 0.14 0.01" euler="0 0 -2">
+      <geom type="box" size="0.10 0.06 0.01" material="mat_dark"/>
+    </body>
+    <body name="mousepad" pos="-0.26 -0.06 0.001" euler="0 0 -4">
+      <geom type="box" size="0.08 0.14 0.002" rgba="0.18 0.21 0.24 1"/>
+    </body>
+
+    <!-- Desk Cables (left side loop) -->
+    <body name="cables" pos="0 0 0.004">
+      <geom type="capsule" fromto="-0.15 0.09 0 -0.14 -0.18 0" size="0.0035" material="mat_cable"/>
+      <geom type="capsule" fromto="-0.14 0.09 0 -0.09 0.04 0" size="0.0025" material="mat_cable"/>
+      <geom type="capsule" fromto="-0.09 0.04 0 -0.08 -0.05 0" size="0.0025" material="mat_cable"/>
+      <geom type="capsule" fromto="-0.08 -0.05 0 -0.14 -0.08 0" size="0.0025" material="mat_cable"/>
+      <geom type="capsule" fromto="-0.14 -0.08 0 -0.22 -0.05 0" size="0.0025" material="mat_cable"/>
+    </body>
+
+    <!-- ==================== RIGHT HAND + MEDIAPIPE OVERLAY ==================== -->
+    <body name="right_hand" pos="0.09 -0.15 0.03" euler="0 0 15">
+      <!-- Wrist / Palm Base -->
+      <geom name="wrist" type="capsule" fromto="-0.015 -0.06 -0.005 0 0 0" size="0.032" material="mat_skin"/>
+      <geom name="palm" type="box" pos="0.015 0.045 0" size="0.042 0.042 0.014" euler="0 0 -15" material="mat_skin"/>
+
+      <!-- 1. THUMB (With Yellow Tip Marker) -->
+      <body name="thumb_cmc" pos="-0.025 0.02 0" euler="0 0 22">
+        <joint name="j_thumb_cmc" type="hinge" axis="0 0 1" range="-30 30"/>
+        <geom type="capsule" fromto="0 0 0 -0.012 0.055 0" size="0.011" material="mat_skin"/>
+        <geom type="capsule" fromto="0 0 0.015 -0.012 0.055 0.015" size="0.002" material="mat_skeleton"/>
+        <body name="thumb_mcp" pos="-0.012 0.055 0" euler="0 0 -8">
+          <joint name="j_thumb_mcp" type="hinge" axis="1 0 0" range="-20 45"/>
+          <geom type="capsule" fromto="0 0 0 -0.008 0.04 0" size="0.010" material="mat_skin"/>
+          <geom type="capsule" fromto="0 0 0.015 -0.008 0.04 0.015" size="0.002" material="mat_skeleton"/>
+          <body name="thumb_ip" pos="-0.008 0.04 0" euler="0 0 -5">
+            <joint name="j_thumb_ip" type="hinge" axis="1 0 0" range="-15 60"/>
+            <geom type="capsule" fromto="0 0 0 -0.005 0.032 0" size="0.009" material="mat_skin"/>
+            <geom type="capsule" fromto="0 0 0.015 -0.005 0.045 0.015" size="0.002" material="mat_skeleton"/>
+            <!-- Yellow Landmark Dot -->
+            <site name="thumb_tip_marker" pos="-0.005 0.045 0.016" size="0.005" material="mat_tip"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- 2. INDEX FINGER (With Yellow Tip Marker) -->
+      <body name="index_mcp" pos="0.01 0.08 0.005" euler="0 0 -28">
+        <joint name="j_index_mcp" type="hinge" axis="1 0 0" range="-10 70"/>
+        <geom type="capsule" fromto="0 -0.07 0.012 0 0 0.012" size="0.0018" material="mat_skeleton"/>
+        <geom type="capsule" fromto="0 0 0 0 0.045 0" size="0.0095" material="mat_skin"/>
+        <geom type="capsule" fromto="0 0 0.012 0 0.045 0.012" size="0.0018" material="mat_skeleton"/>
+        <body name="index_pip" pos="0 0.045 0" euler="0 0 25">
+          <joint name="j_index_pip" type="hinge" axis="1 0 0" range="0 90"/>
+          <geom type="capsule" fromto="0 0 0 0 0.03 0" size="0.0085" material="mat_skin"/>
+          <geom type="capsule" fromto="0 0 0.012 0 0.03 0.012" size="0.0018" material="mat_skeleton"/>
+          <body name="index_dip" pos="0 0.03 0" euler="0 0 35">
+            <joint name="j_index_dip" type="hinge" axis="1 0 0" range="0 70"/>
+            <geom type="capsule" fromto="0 0 0 0 0.022 0" size="0.0075" material="mat_skin"/>
+            <geom type="capsule" fromto="0 0 0.012 0 0.022 0.012" size="0.0018" material="mat_skeleton"/>
+            <!-- Yellow Landmark Dot -->
+            <site name="index_tip_marker" pos="0 0.022 0.013" size="0.005" material="mat_tip"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- 3. MIDDLE FINGER -->
+      <body name="middle_mcp" pos="0.026 0.072 0.002" euler="0 0 -32">
+        <joint name="j_middle_mcp" type="hinge" axis="1 0 0" range="-10 70"/>
+        <geom type="capsule" fromto="-0.01 -0.065 0.012 0 0 0.012" size="0.0018" material="mat_skeleton"/>
+        <geom type="capsule" fromto="0 0 0 0 0.045 0" size="0.0095" material="mat_skin"/>
+        <geom type="capsule" fromto="0 0 0.012 0 0.045 0.012" size="0.0018" material="mat_skeleton"/>
+        <body name="middle_pip" pos="0 0.045 0" euler="0 0 38">
+          <joint name="j_middle_pip" type="hinge" axis="1 0 0" range="0 90"/>
+          <geom type="capsule" fromto="0 0 0 0 0.028 0" size="0.0085" material="mat_skin"/>
+          <geom type="capsule" fromto="0 0 0.012 0 0.028 0.012" size="0.0018" material="mat_skeleton"/>
+          <body name="middle_dip" pos="0 0.028 0" euler="0 0 42">
+            <geom type="capsule" fromto="0 0 0 0 0.02 0" size="0.0075" material="mat_skin"/>
+            <geom type="capsule" fromto="0 0 0.012 0 0.02 0.012" size="0.0018" material="mat_skeleton"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- 4. RING FINGER -->
+      <body name="ring_mcp" pos="0.04 0.058 -0.002" euler="0 0 -36">
+        <joint name="j_ring_mcp" type="hinge" axis="1 0 0" range="-10 70"/>
+        <geom type="capsule" fromto="-0.02 -0.055 0.012 0 0 0.012" size="0.0018" material="mat_skeleton"/>
+        <geom type="capsule" fromto="0 0 0 0 0.04 0" size="0.009" material="mat_skin"/>
+        <geom type="capsule" fromto="0 0 0.012 0 0.04 0.012" size="0.0018" material="mat_skeleton"/>
+        <body name="ring_pip" pos="0 0.04 0" euler="0 0 45">
+          <geom type="capsule" fromto="0 0 0 0 0.025 0" size="0.008" material="mat_skin"/>
+          <geom type="capsule" fromto="0 0 0.012 0 0.025 0.012" size="0.0018" material="mat_skeleton"/>
+          <body name="ring_dip" pos="0 0.025 0" euler="0 0 45">
+            <geom type="capsule" fromto="0 0 0 0 0.018 0" size="0.007" material="mat_skin"/>
+            <geom type="capsule" fromto="0 0 0.012 0 0.018 0.012" size="0.0018" material="mat_skeleton"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- 5. PINKY FINGER -->
+      <body name="pinky_mcp" pos="0.052 0.042 -0.005" euler="0 0 -40">
+        <joint name="j_pinky_mcp" type="hinge" axis="1 0 0" range="-10 70"/>
+        <geom type="capsule" fromto="-0.03 -0.045 0.012 0 0 0.012" size="0.0018" material="mat_skeleton"/>
+        <geom type="capsule" fromto="0 0 0 0 0.032 0" size="0.008" material="mat_skin"/>
+        <geom type="capsule" fromto="0 0 0.012 0 0.032 0.012" size="0.0018" material="mat_skeleton"/>
+        <body name="pinky_pip" pos="0 0.032 0" euler="0 0 50">
+          <geom type="capsule" fromto="0 0 0 0 0.02 0" size="0.007" material="mat_skin"/>
+          <geom type="capsule" fromto="0 0 0.012 0 0.02 0.012" size="0.0018" material="mat_skeleton"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- Actuators for grasping the cube with thumb and index finger -->
+  <actuator>
+    <position name="act_thumb_cmc" joint="j_thumb_cmc" kp="5"/>
+    <position name="act_thumb_mcp" joint="j_thumb_mcp" kp="5"/>
+    <position name="act_index_mcp" joint="j_index_mcp" kp="5"/>
+    <position name="act_index_pip" joint="j_index_pip" kp="5"/>
+  </actuator>
+</mujoco>

@@ -7,6 +7,9 @@ only to print how far off the model is; it is never executed.
     python run_vlm_policy.py --lora ../checkpoints/<run>/trainer/checkpoint-1000
     python run_vlm_policy.py --lora ... --episodes 20 --headless    # success rate only, no windows
     python run_vlm_policy.py --policy expert                         # sanity check without a model
+    python run_vlm_policy.py --lora ... --cube-color blue            # cube color never seen in training
+    python run_vlm_policy.py --lora ... --cube-color "#ff8800" --say-color   # also name it in the prompt
+    python run_vlm_policy.py --lora ... --floor-color gray           # floor color never seen in training
 """
 import os
 import sys
@@ -29,6 +32,65 @@ from eval_pick_place import parse_answer
 from pick_place_dataset import PROMPT_STYLES, apply_prompt_style, run_prompt_style
 
 WINDOW = "VLM policy (cameras the model sees)"
+
+COLORS = {
+    "green": (0.0, 1.0, 0.0), "red": (1.0, 0.0, 0.0), "blue": (0.1, 0.3, 1.0), "yellow": (1.0, 1.0, 0.0),
+    "orange": (1.0, 0.5, 0.0), "purple": (0.5, 0.0, 0.8), "cyan": (0.0, 1.0, 1.0), "magenta": (1.0, 0.0, 1.0),
+    "pink": (1.0, 0.6, 0.8), "white": (1.0, 1.0, 1.0), "gray": (0.5, 0.5, 0.5), "black": (0.05, 0.05, 0.05),
+    "brown": (0.55, 0.3, 0.1),
+}
+
+
+def parse_color(text):
+    """'blue', '#3366ff' or '0.2,0.4,1.0' -> (r, g, b) in 0..1."""
+    t = text.strip().lower()
+    if t in COLORS:
+        return COLORS[t]
+    if t.startswith("#") and len(t) == 7:
+        return tuple(int(t[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    parts = t.split(",")
+    if len(parts) == 3:
+        rgb = tuple(float(v) for v in parts)
+        if all(0 <= v <= 1 for v in rgb):
+            return rgb
+    raise argparse.ArgumentTypeError(
+        f"unknown color {text!r}: use a name ({', '.join(COLORS)}), '#rrggbb' or 'r,g,b' in 0..1")
+
+
+# Measured in the top/wrist cameras: seen colour ~ offset + gain * material colour (clipped at 1).
+# The scene's lights overexpose, so without this correction e.g. orange renders as yellow.
+CUBE_LIGHTING = (0.2, 2.0)
+FLOOR_LIGHTING = (0.0, 1.9)
+
+
+def to_material(rgb, lighting):
+    """Material colour that renders as rgb under the given (offset, gain) lighting."""
+    offset, gain = lighting
+    return tuple(min(max((c - offset) / gain, 0.0), 1.0) for c in rgb)
+
+
+def apply_scene_colors(model, cube_color, floor_color):
+    """Recolour the cube and (optionally) the floor. Green cube / no floor colour = training look."""
+    cube_rgb = parse_color(cube_color)
+    box = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "box")
+    if cube_color.strip().lower() == "green":
+        model.geom_rgba[box] = [0.0, 1.0, 0.0, 1.0]  # exact training material
+    else:
+        model.geom_rgba[box] = [*to_material(cube_rgb, CUBE_LIGHTING), 1.0]
+    print(f"[run] cube color : {cube_color} rgb={tuple(round(v, 2) for v in cube_rgb)}")
+    if cube_rgb == COLORS["red"]:
+        print("[run] note: the place pad is red too - the model may confuse cube and pad")
+
+    if floor_color:
+        floor_rgb = parse_color(floor_color)
+        floor = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        # The floor's colour comes from a textured material that can't be recoloured at runtime;
+        # drop the material and use a plain geom colour instead.
+        model.geom_matid[floor] = -1
+        model.geom_rgba[floor] = [*to_material(floor_rgb, FLOOR_LIGHTING), 1.0]
+        print(f"[run] floor color: {floor_color} rgb={tuple(round(v, 2) for v in floor_rgb)}")
+        if np.allclose(floor_rgb, cube_rgb, atol=0.15):
+            print("[run] note: floor and cube colors are almost the same - the cube will be hard to see")
 
 
 class VLMPolicy:
@@ -70,7 +132,7 @@ def show(frames, lines):
     cv2.waitKey(1)
 
 
-def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window, prompt_style):
+def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window, prompt_style, cube_word=None):
     env.reset(env.sample_task(rng))
     expert_kfs = env.plan_keyframes()  # reference for error printing only
     phase_errs = []
@@ -79,6 +141,8 @@ def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window, 
             viewer.sync()
         frames = render_cams(env, renderer, cams, scene_option)
         prompt = apply_prompt_style(build_prompt(k, env.arm_q(), env.data.ctrl[7]), prompt_style)
+        if cube_word:
+            prompt = prompt.replace("green cube", f"{cube_word} cube")
 
         t0 = time.time()
         text = policy([Image.fromarray(f) for f in frames], prompt, kf)
@@ -125,7 +189,18 @@ def main():
     ap.add_argument("--load-in-4bit", action="store_true")
     ap.add_argument("--prompt-style", choices=PROMPT_STYLES, default=None,
                     help="default: the style the run was trained with (from its config.json)")
+    ap.add_argument("--cube-color", default="green",
+                    help=f"name ({', '.join(COLORS)}), '#rrggbb' or 'r,g,b' in 0..1. Training only used green")
+    ap.add_argument("--say-color", action="store_true",
+                    help="also write the color in the instruction (training prompts always said 'green cube')")
+    ap.add_argument("--floor-color", default=None,
+                    help="same formats as --cube-color. Default: the dark blue training floor")
     args = ap.parse_args()
+    for c in filter(None, (args.cube_color, args.floor_color)):
+        try:
+            parse_color(c)
+        except argparse.ArgumentTypeError as e:
+            ap.error(str(e))
 
     if args.policy == "vlm" and not args.lora:
         ap.error("--lora is required for --policy vlm")
@@ -135,6 +210,9 @@ def main():
 
     cams = args.cams.split(",")
     env = PickPlaceEnv()
+    apply_scene_colors(env.model, args.cube_color, args.floor_color)
+    cube_word = args.cube_color if args.say_color else None
+    print(f"[run] prompt says '{cube_word or 'green'} cube'")
     renderer = mujoco.Renderer(env.model, height=args.height, width=args.width)
     scene_option = make_scene_option()
     rng = np.random.default_rng(args.seed)
@@ -144,7 +222,7 @@ def main():
         for ep in range(args.episodes):
             print(f"episode {ep + 1}/{args.episodes}")
             ok, errs = run_episode(env, renderer, scene_option, policy, rng, cams, viewer,
-                                   window=not args.headless, prompt_style=prompt_style)
+                                   window=not args.headless, prompt_style=prompt_style, cube_word=cube_word)
             results.append((ok, errs))
             print(f"  -> {'SUCCESS' if ok else 'FAIL'}")
             if viewer is not None:
@@ -161,7 +239,8 @@ def main():
         cv2.destroyAllWindows()
 
     n_ok = sum(ok for ok, _ in results)
-    print(f"\n=== {args.policy} policy: success {n_ok}/{len(results)} ===")
+    floor = f", {args.floor_color} floor" if args.floor_color else ""
+    print(f"\n=== {args.policy} policy, {args.cube_color} cube{floor}: success {n_ok}/{len(results)} ===")
     by_phase = {}
     for _, errs in results:
         for phase, e in errs:
