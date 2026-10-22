@@ -26,6 +26,7 @@ from PIL import Image
 from expert import PickPlaceEnv, PHASES, format_action, GRIPPER_OPEN, GRIPPER_CLOSED
 from generate_dataset import build_prompt, make_scene_option, CAMERAS
 from eval_pick_place import parse_answer
+from pick_place_dataset import PROMPT_STYLES, apply_prompt_style, run_prompt_style
 
 WINDOW = "VLM policy (cameras the model sees)"
 
@@ -69,7 +70,7 @@ def show(frames, lines):
     cv2.waitKey(1)
 
 
-def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window):
+def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window, prompt_style):
     env.reset(env.sample_task(rng))
     expert_kfs = env.plan_keyframes()  # reference for error printing only
     phase_errs = []
@@ -77,7 +78,7 @@ def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window):
         if viewer is not None:
             viewer.sync()
         frames = render_cams(env, renderer, cams, scene_option)
-        prompt = build_prompt(k, env.arm_q(), env.data.ctrl[7])
+        prompt = apply_prompt_style(build_prompt(k, env.arm_q(), env.data.ctrl[7]), prompt_style)
 
         t0 = time.time()
         text = policy([Image.fromarray(f) for f in frames], prompt, kf)
@@ -122,11 +123,15 @@ def main():
     ap.add_argument("--height", type=int, default=336)
     ap.add_argument("--headless", action="store_true", help="no MuJoCo viewer / camera window")
     ap.add_argument("--load-in-4bit", action="store_true")
+    ap.add_argument("--prompt-style", choices=PROMPT_STYLES, default=None,
+                    help="default: the style the run was trained with (from its config.json)")
     args = ap.parse_args()
 
     if args.policy == "vlm" and not args.lora:
         ap.error("--lora is required for --policy vlm")
     policy = VLMPolicy(args.lora, args.load_in_4bit) if args.policy == "vlm" else ExpertPolicy()
+    prompt_style = args.prompt_style or (run_prompt_style(args.lora) if args.lora else "full")
+    print(f"[run] prompt style: {prompt_style}")
 
     cams = args.cams.split(",")
     env = PickPlaceEnv()
@@ -138,7 +143,8 @@ def main():
     def run_all(viewer=None):
         for ep in range(args.episodes):
             print(f"episode {ep + 1}/{args.episodes}")
-            ok, errs = run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window=not args.headless)
+            ok, errs = run_episode(env, renderer, scene_option, policy, rng, cams, viewer,
+                                   window=not args.headless, prompt_style=prompt_style)
             results.append((ok, errs))
             print(f"  -> {'SUCCESS' if ok else 'FAIL'}")
             if viewer is not None:

@@ -22,7 +22,7 @@ import argparse
 
 import numpy as np
 
-from pick_place_dataset import PickPlaceConversations
+from pick_place_dataset import PickPlaceConversations, PROMPT_STYLES, run_prompt_style
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ACTION_RE = re.compile(r"j:\s*((?:-?\d+(?:\.\d+)?\s+){6}-?\d+(?:\.\d+)?)\s*\|\s*gripper:\s*(open|closed)")
@@ -108,12 +108,13 @@ def print_summary(s):
         print(f"  {phase:10s} n={p['n']:4d}  joint MAE {p['joint_mae_deg']:.2f} deg{extra}")
 
 
-def evaluate(model, tokenizer, dataset_dir, split="val", n=300, seed=0, out_dir=None, cams=None):
+def evaluate(model, tokenizer, dataset_dir, split="val", n=300, seed=0, out_dir=None, cams=None,
+             prompt_style="full"):
     """Run the model on n random samples (n=0 -> whole split). Returns the summary dict."""
     from unsloth import FastVisionModel
     FastVisionModel.for_inference(model)
 
-    ds = PickPlaceConversations(dataset_dir, split, cams=cams)
+    ds = PickPlaceConversations(dataset_dir, split, cams=cams, prompt_style=prompt_style)
     if n and n < len(ds):
         idx = np.sort(np.random.default_rng(seed).choice(len(ds), n, replace=False))
     else:
@@ -123,7 +124,7 @@ def evaluate(model, tokenizer, dataset_dir, split="val", n=300, seed=0, out_dir=
     results, t0 = [], time.time()
     for k, i in enumerate(idx):
         row = ds.rows[i]
-        text = predict(model, tokenizer, ds.images(row), row["prompt"])
+        text = predict(model, tokenizer, ds.images(row), ds.prompt(row))
         rec = {"id": row["id"], "phase": row["phase"], "answer": row["answer"], "prediction": text}
         parsed = parse_answer(text)
         if parsed is not None:
@@ -158,12 +159,16 @@ def main():
     ap.add_argument("--n", type=int, default=300, help="samples to evaluate, 0 = whole split")
     ap.add_argument("--load-in-4bit", action="store_true")
     ap.add_argument("--out-dir", default=None, help="default: <lora>/eval")
+    ap.add_argument("--prompt-style", choices=PROMPT_STYLES, default=None,
+                    help="default: the style the run was trained with (from its config.json)")
     args = ap.parse_args()
 
     from unsloth import FastVisionModel
     model, tokenizer = FastVisionModel.from_pretrained(args.lora, load_in_4bit=args.load_in_4bit)
+    prompt_style = args.prompt_style or run_prompt_style(args.lora)
+    print(f"[eval] prompt style: {prompt_style}")
     evaluate(model, tokenizer, args.dataset, args.split, args.n,
-             out_dir=args.out_dir or os.path.join(args.lora, "eval"))
+             out_dir=args.out_dir or os.path.join(args.lora, "eval"), prompt_style=prompt_style)
 
 
 if __name__ == "__main__":

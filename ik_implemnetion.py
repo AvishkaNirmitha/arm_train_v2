@@ -71,6 +71,9 @@ renderer_top = mujoco.Renderer(model, height=480, width=640)
 # ── Initialize Front Camera Renderer ───────────────────────────────────────
 renderer_front = mujoco.Renderer(model, height=480, width=640)
 
+# ── Initialize Base Camera Renderer ────────────────────────────────────────
+renderer_base = mujoco.Renderer(model, height=480, width=640)
+
 # ── STEP 4–6: Main loop ─────────────────────────────────────────────────────
 with viewer.launch_passive(model, data) as v:
     while v.is_running():
@@ -170,6 +173,12 @@ with viewer.launch_passive(model, data) as v:
         front_image = renderer_front.render()
         bgr_front = cv2.cvtColor(front_image, cv2.COLOR_RGB2BGR)
         cv2.imshow("Front RGB Camera", bgr_front)
+
+        # Render and display Base camera (mounted on the robot base, facing the workspace)
+        renderer_base.update_scene(data, camera="base_camera")
+        base_image = renderer_base.render()
+        bgr_base = cv2.cvtColor(base_image, cv2.COLOR_RGB2BGR)
+        cv2.imshow("Base RGB Camera", bgr_base)
         
         cv2.waitKey(1)
 

@@ -3,10 +3,13 @@ Qwen3_5_(2B)_PickPlace_SFT.ipynb: load model -> LoRA -> train -> save -> evaluat
 
     python train_pick_place.py --max-steps 30                 # smoke test
     python train_pick_place.py                                # full run (1 epoch)
-    python train_pick_place.py --resume checkpoints/<run>     # continue an interrupted run
+    python train_pick_place.py --resume ../checkpoints/<run>  # continue an interrupted run
+
+--prompt-style image_only (default) drops "current joints/gripper" from the prompt so the model must
+use the images; "full" is the original prompt (the model learned to copy the joints from it).
 
 Every run gets its own folder:
-    checkpoints/<name>_<dd-mm-yyyy-hh-mm-ss>/
+    checkpoints/<name>_<prompt-style>_<dd-mm-yyyy-hh-mm-ss>/
         config.json    run settings
         trainer/       intermediate checkpoints (for --resume)
         lora/          final LoRA adapters + tokenizer
@@ -30,7 +33,7 @@ from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 from trl import SFTTrainer, SFTConfig
 
-from pick_place_dataset import PickPlaceConversations
+from pick_place_dataset import PickPlaceConversations, PROMPT_STYLES
 from eval_pick_place import evaluate
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +58,7 @@ def parse_args():
     ap.add_argument("--dataset", default=None, help="dataset dir (default: newest in datasets/)")
     ap.add_argument("--name", default="qwen35_2b_pickplace", help="run folder prefix")
     ap.add_argument("--resume", default=None, metavar="RUN_DIR", help="continue a run from its last checkpoint")
+    ap.add_argument("--prompt-style", choices=PROMPT_STYLES, default="image_only")
     ap.add_argument("--cams", default=None, help="comma list, e.g. 'top' (default: all saved cameras)")
     ap.add_argument("--load-in-4bit", action="store_true", help="use if you run out of GPU memory")
 
@@ -82,12 +86,13 @@ def main():
         with open(os.path.join(run_dir, "config.json")) as f:
             saved = json.load(f)
         # Keep the original run's model/data/hyper-parameters; only eval options may change
+        args.prompt_style = "full"  # runs from before the option used the full prompt
         for k, v in saved["args"].items():
             if k not in ("resume", "eval_n", "no_eval"):
                 setattr(args, k, v)
     else:
         args.dataset = os.path.abspath(args.dataset or latest_dataset())
-        run_dir = os.path.join(PROJECT_DIR, "checkpoints", f"{args.name}_{datetime.now():%d-%m-%Y-%H-%M-%S}")
+        run_dir = os.path.join(PROJECT_DIR, "checkpoints", f"{args.name}_{args.prompt_style}_{datetime.now():%d-%m-%Y-%H-%M-%S}")
         os.makedirs(run_dir, exist_ok=True)
         with open(os.path.join(run_dir, "config.json"), "w") as f:
             json.dump({"args": vars(args), "started": datetime.now().isoformat(timespec="seconds")}, f, indent=2)
@@ -96,6 +101,7 @@ def main():
     print(f"[train] run dir : {run_dir}")
     print(f"[train] dataset : {args.dataset}")
     print(f"[train] model   : {args.model}  (4bit={args.load_in_4bit})")
+    print(f"[train] prompt  : {args.prompt_style}")
 
     # ── Model + LoRA ───────────────────────────────────────────────────────
     model, tokenizer = FastVisionModel.from_pretrained(
@@ -117,7 +123,8 @@ def main():
     )
 
     # ── Data ───────────────────────────────────────────────────────────────
-    train_dataset = PickPlaceConversations(args.dataset, split="train", cams=cams).to_hf_dataset()
+    train_dataset = PickPlaceConversations(args.dataset, split="train", cams=cams,
+                                           prompt_style=args.prompt_style).to_hf_dataset()
     print(f"[train] {len(train_dataset)} train samples")
 
     # ── Train ──────────────────────────────────────────────────────────────
@@ -167,7 +174,7 @@ def main():
     # ── Evaluate ───────────────────────────────────────────────────────────
     if not args.no_eval:
         evaluate(model, tokenizer, args.dataset, split="val", n=args.eval_n,
-                 out_dir=os.path.join(run_dir, "eval"), cams=cams)
+                 out_dir=os.path.join(run_dir, "eval"), cams=cams, prompt_style=args.prompt_style)
 
 
 if __name__ == "__main__":
