@@ -1,0 +1,45 @@
+<mujoco model="photo_scene">
+  <compiler angle="degree"/>
+  <option timestep="0.002"/>
+  <visual>
+    <global offwidth="1600" offheight="1600"/>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.3 0.3 0.3" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <worldbody>
+    <!-- Ground floor at z=0 -->
+    <geom name="floor" type="plane" size="2 2 0.05" pos="0 0 0" rgba="0.8 0.8 0.8 1"/>
+
+    <!-- Lighting matching the overhead studio illumination -->
+    <light name="main_light" pos="0.25 0.25 1.4" dir="-0.25 -0.25 -0.9" diffuse="0.6 0.6 0.6" specular="0.15 0.15 0.15" castshadow="true"/>
+    <light name="fill_light" pos="-0.4 -0.4 1.2" dir="0.3 0.3 -0.9" diffuse="0.25 0.25 0.25" specular="0.05 0.05 0.05" castshadow="false"/>
+
+    <!-- White tabletop surface -->
+    <body name="table" pos="0 0 0.75">
+      <geom name="table_top" type="box" size="0.8 0.8 0.02" pos="0 0 -0.02" rgba="0.90 0.90 0.91 1" friction="0.7 0.005 0.0001"/>
+    </body>
+
+    <!-- Dark grey square mat (approx 45 cm x 45 cm x 2 mm) -->
+    <body name="dark_mat" pos="0 0 0.751">
+      <geom name="dark_mat_geom" type="box" size="0.225 0.225 0.001" rgba="0.24 0.26 0.27 1" friction="0.9 0.005 0.0001"/>
+    </body>
+
+    <!-- Green sticky note pad / rectangular paper (approx 12.5 cm x 7.6 cm x 2 mm) -->
+    <body name="green_note" pos="-0.105 0.078 0.753" euler="0 0 3">
+      <freejoint name="green_note_joint"/>
+      <geom name="green_note_geom" type="box" size="0.0625 0.038 0.001" mass="0.008" rgba="0.50 0.73 0.45 1" friction="0.8 0.005 0.0001"/>
+    </body>
+
+    <!-- White rectangular block (approx 3.8 cm x 3.8 cm x 6.5 cm tall) -->
+    <body name="white_block" pos="0.122 -0.005 0.7845" euler="0 0 22">
+      <freejoint name="white_block_joint"/>
+      <geom name="white_block_geom" type="box" size="0.019 0.019 0.0325" mass="0.065" rgba="0.90 0.91 0.92 1" friction="0.6 0.005 0.0001"/>
+    </body>
+
+    <!-- Camera 1: Top-down slightly tilted view -->
+    <camera name="photo_cam_1" pos="-0.005 -0.075 1.38" xyaxes="0.992 0.125 0.0 -0.123 0.980 0.156" fovy="46"/>
+
+    <!-- Camera 2: Front-angled view -->
+    <camera name="photo_cam_2" pos="-0.005 -0.355 1.05" xyaxes="0.9999 -0.010 0.0 0.007 0.643 0.766" fovy="43"/>
+  </worldbody>
+</mujoco>

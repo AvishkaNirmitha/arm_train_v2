@@ -17,3 +17,7 @@ checkpoints/
 
 
 unsloth_compiled_cache/
+
+# /so_101_arm/simulation_URDF/Assets/Simulation/*
+# /so_101_arm/simulation_URDF/Assets/media/*
+/so_101_arm/simulation_URDF/*
