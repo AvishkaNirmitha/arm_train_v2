@@ -52,7 +52,7 @@ def render(env, renderer, scene_option, cams):
 def augment(img, rng):
     """Camera-like degradations so the model doesn't rely on perfectly clean renders."""
     x = img.astype(np.float32)
-    x = (x - 128.0) * rng.uniform(0.9, 1.1) + 128.0 + rng.uniform(-12, 12)   # contrast, brightness
+    x = (x - 128.0) * rng.uniform(0.8, 1.25) + 128.0 + rng.uniform(-25, 25)  # contrast, brightness (exposure)
     x += rng.normal(0, rng.uniform(0, 4), x.shape)                           # sensor noise
     x = np.clip(x, 0, 255).astype(np.uint8)
     if rng.random() < 0.2:

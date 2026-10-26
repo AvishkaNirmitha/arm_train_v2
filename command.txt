@@ -5,3 +5,67 @@ this is how activate venv
 
 asus@asus-ASUS-TUF-Gaming-A15-FA507NVR-FA507NVR:~/Desktop/works/60_pick_place_advanced$ source .venv/bin/activate
 (.venv) asus@asus-ASUS-TUF-Gaming-A15-FA507NVR-FA507NVR:~/Desktop/works/60_pick_place_advanced$ 
+
+
+-------------------------------------------------------
+-------------------------------------------------------
+
+
+cd ~/Desktop/works/60_pick_place_advanced
+python so101_real/so101_arm.py setup       # it asks for wrist_flex, elbow_flex, shoulder_lift, shoulder_pan in turn
+python so101_real/so101_arm.py calibrate
+python so101_real/so101_arm.py read        # torque is off: move the arm by hand and watch the angles in degrees
+
+
+
+------------------------------------------------
+----------------------------------------------------------
+
+
+(.venv-lerobot) asus@asus-ASUS-TUF-Gaming-A15-FA507NVR-FA507NVR:~/Desktop/works/60_pick_place_advanced$ python so101_real/so101_arm.py setup  
+Connect the controller board to the 'wrist_flex' motor only and press enter.
+'wrist_flex' motor id set to 4
+Connect the controller board to the 'elbow_flex' motor only and press enter.
+'elbow_flex' motor id set to 3
+Connect the controller board to the 'shoulder_lift' motor only and press enter.
+'shoulder_lift' motor id set to 2
+Connect the controller board to the 'shoulder_pan' motor only and press enter.
+'shoulder_pan' motor id set to 1
+(.venv-lerobot) asus@asus-ASUS-TUF-Gaming-A15-FA507NVR-FA507NVR:~/Desktop/works/60_pick_place_advanced$ 
+
+
+
+
+--------------------------------------------
+-------------------------------------------
+
+{
+    "shoulder_pan": {
+        "id": 1,
+        "drive_mode": 0,
+        "homing_offset": -113,
+        "range_min": 2040,
+        "range_max": 2053
+    },
+    "shoulder_lift": {
+        "id": 2,
+        "drive_mode": 0,
+        "homing_offset": 695,
+        "range_min": 839,
+        "range_max": 3199
+    },
+    "elbow_flex": {
+        "id": 3,
+        "drive_mode": 0,
+        "homing_offset": 730,
+        "range_min": 909,
+        "range_max": 3122
+    },
+    "wrist_flex": {
+        "id": 4,
+        "drive_mode": 0,
+        "homing_offset": 603,
+        "range_min": 847,
+        "range_max": 2893
+    }
+}

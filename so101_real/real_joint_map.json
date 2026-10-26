@@ -1,0 +1,22 @@
+{
+  "shoulder_pan": {
+    "sign": 1,
+    "offset_deg": 0.0
+  },
+  "shoulder_lift": {
+    "sign": 1,
+    "offset_deg": 0.0
+  },
+  "elbow_flex": {
+    "sign": 1,
+    "offset_deg": 0.0
+  },
+  "wrist_flex": {
+    "sign": 1,
+    "offset_deg": 0.0
+  },
+  "wrist_roll": {
+    "sign": 1,
+    "offset_deg": 0.0
+  }
+}

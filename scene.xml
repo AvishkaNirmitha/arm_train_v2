@@ -19,21 +19,21 @@
       <geom name="table_top" type="box" size="0.8 0.8 0.02" pos="0 0 -0.02" rgba="0.90 0.90 0.91 1" friction="0.7 0.005 0.0001"/>
     </body>
 
-    <!-- Dark grey square mat (approx 45 cm x 45 cm x 2 mm) -->
+    <!-- Dark grey square mat (40 cm x 40 cm x 2 mm, measured) -->
     <body name="dark_mat" pos="0 0 0.751">
-      <geom name="dark_mat_geom" type="box" size="0.225 0.225 0.001" rgba="0.24 0.26 0.27 1" friction="0.9 0.005 0.0001"/>
+      <geom name="dark_mat_geom" type="box" size="0.2 0.2 0.001" rgba="0.24 0.26 0.27 1" friction="0.9 0.005 0.0001"/>
     </body>
 
-    <!-- Green sticky note pad / rectangular paper (approx 12.5 cm x 7.6 cm x 2 mm) -->
+    <!-- Green sticky note pad / rectangular paper (11 cm x 7 cm x 2 mm, measured) -->
     <body name="green_note" pos="-0.105 0.078 0.753" euler="0 0 3">
       <freejoint name="green_note_joint"/>
-      <geom name="green_note_geom" type="box" size="0.0625 0.038 0.001" mass="0.008" rgba="0.50 0.73 0.45 1" friction="0.8 0.005 0.0001"/>
+      <geom name="green_note_geom" type="box" size="0.055 0.035 0.001" mass="0.008" rgba="0.50 0.73 0.45 1" friction="0.8 0.005 0.0001"/>
     </body>
 
-    <!-- White rectangular block (approx 3.8 cm x 3.8 cm x 6.5 cm tall) -->
-    <body name="white_block" pos="0.122 -0.005 0.7845" euler="0 0 22">
+    <!-- White rectangular block (3 cm x 3 cm x 5 cm tall, measured) -->
+    <body name="white_block" pos="0.122 -0.005 0.777" euler="0 0 22">
       <freejoint name="white_block_joint"/>
-      <geom name="white_block_geom" type="box" size="0.019 0.019 0.0325" mass="0.065" rgba="0.90 0.91 0.92 1" friction="0.6 0.005 0.0001"/>
+      <geom name="white_block_geom" type="box" size="0.015 0.015 0.025" mass="0.032" rgba="0.90 0.91 0.92 1" friction="0.6 0.005 0.0001"/>
     </body>
 
     <!-- Camera 1: Top-down slightly tilted view -->

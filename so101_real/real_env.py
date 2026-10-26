@@ -4,9 +4,9 @@ World layout (table, mat, note, block, lights) is read from ../scene.xml, so tha
 of the real setup. Everything is expressed in the ROBOT frame: origin = shoulder-pan axis on the table top,
 +x = straight ahead into the mat, +z = up. The robot is mounted at the centre of the mat's front edge.
 
-Cameras (build these on the real arm, measured from the shoulder-pan axis on the table):
-    top_camera   : 0.19 m ahead, 0.50 m above the table, looking straight down, image top = away from robot,
-                   vertical field of view 45 deg
+Cameras:
+    top_camera   : the pose measured on the real camera by calibrate_top_camera.py (top_camera_calib.json).
+                   Without that file: 0.19 m ahead, 0.50 m above the table, straight down, 45 deg vertical FOV.
     wrist_camera : on the fixed jaw, as in ../so101_ik.py (WRIST_CAM_POS / WRIST_CAM_TILT, 70 deg)
 
 IK plans 8 joint keyframes (training labels); the arm itself is driven only in joint space by `move_to`.
@@ -17,6 +17,7 @@ IK plans 8 joint keyframes (training labels); the arm itself is driven only in j
 import os
 import re
 import sys
+import json
 import time
 import argparse
 from dataclasses import dataclass
@@ -30,17 +31,40 @@ from so101_ik import (SO101_XML, IK, ARM_JOINTS, GRIPPER_OPEN, GRIPPER_CLOSED, G
                       WRIST_CAM_POS, WRIST_CAM_TILT, quat_from_mat, quat_to_mat, top_down_rotation, grasp_yaw)
 
 SCENE_XML = os.path.join(ROOT, "scene.xml")
+HERE = os.path.dirname(os.path.abspath(__file__))
+TOP_CAM_CALIB = os.path.join(HERE, "top_camera_calib.json")
 PHASES = ["PRE_GRASP", "GRASP", "CLOSE", "LIFT", "PRE_PLACE", "PLACE", "RELEASE", "RETREAT"]
 
-# Robot mount in scene.xml coordinates: centre of the mat's front (-y) edge, on the table, facing +y
-MOUNT_SCENE_POS = np.array([0.0, -0.225, 0.75])
 
-# Objects (from scene.xml): white block 38 x 38 x 65 mm, green note 125 x 76 x 2 mm
-BLOCK_HALF = np.array([0.019, 0.019, 0.0325])
-NOTE_HALF = np.array([0.0625, 0.038, 0.001])
-MAT_HALF = 0.225
-MAT_TOP = 0.002          # mat top above the table, robot frame
+def _scene_dims():
+    """Sizes and placements read from scene.xml, the one description of the real setup."""
+    s = mujoco.MjModel.from_xml_path(SCENE_XML)
+    d = mujoco.MjData(s)
+    mujoco.mj_forward(s, d)
+    gid = {n: s.geom(n).id for n in ("table_top", "dark_mat_geom", "green_note_geom", "white_block_geom")}
+    table_top = d.geom_xpos[gid["table_top"]][2] + s.geom_size[gid["table_top"]][2]
+    mat = gid["dark_mat_geom"]
+    note_R = d.geom_xmat[gid["green_note_geom"]].reshape(3, 3)
+    return {
+        "table_top": table_top,
+        "mat_center": d.geom_xpos[mat][:2].copy(),
+        "mat_half": float(s.geom_size[mat][0]),
+        "mat_top": float(d.geom_xpos[mat][2] + s.geom_size[mat][2] - table_top),
+        "block_half": s.geom_size[gid["white_block_geom"]].copy(),
+        "note_half": s.geom_size[gid["green_note_geom"]].copy(),
+        "note_xy": d.geom_xpos[gid["green_note_geom"]][:2].copy(),
+        "note_yaw": float(np.arctan2(note_R[1, 0], note_R[0, 0])),
+    }
+
+
+_DIMS = _scene_dims()
+MAT_HALF = _DIMS["mat_half"]
+MAT_TOP = _DIMS["mat_top"]             # mat top above the table, robot frame
+BLOCK_HALF = _DIMS["block_half"]
+NOTE_HALF = _DIMS["note_half"]
 NOTE_TOP = MAT_TOP + 2 * NOTE_HALF[2]
+# Robot mount in scene.xml coordinates: centre of the mat's front (-y) edge, on the table, facing +y
+MOUNT_SCENE_POS = np.array([_DIMS["mat_center"][0], _DIMS["mat_center"][1] - MAT_HALF, _DIMS["table_top"]])
 
 # TCP: between the jaws. Fixed jaw face at site z=0, so the block centre sits BLOCK_HALF + 3 mm clearance
 # away from it (so101_ik.py uses 12.5 mm for its 25 mm cube).
@@ -61,10 +85,11 @@ PLACE_PULL_FROM = 0.27
 PLACE_PULL_MAX = 0.015
 
 # Where things may be placed (robot frame): the reachable band, inside the mat. Closer than 20 cm the
-# arm's links come down next to the 6.5 cm block and knock it over.
+# arm's links come down next to the block and knock it over.
 REACH = (0.20, 0.32)
 MAT_MARGIN = 0.03
-NOTE_DEFAULT_SCENE = np.array([-0.105, 0.078])  # scene.xml position
+NOTE_DEFAULT_SCENE = _DIMS["note_xy"]           # scene.xml position
+NOTE_DEFAULT_YAW = _DIMS["note_yaw"] - np.pi / 2  # in the robot frame (rotated 90 deg from scene.xml)
 NOTE_DEFAULT_PROB = 0.6                         # usually on its spot, sometimes anywhere reachable
 NOTE_DEFAULT_JITTER = 0.03
 MIN_BLOCK_NOTE_DIST = 0.10
@@ -80,6 +105,16 @@ ARM_SPECULAR = 0.25                     # matte PLA, not glossy
 
 TOP_CAM_POS = np.array([0.19, 0.0, 0.50])
 TOP_CAM_FOVY = 45.0
+
+
+def top_camera_pose():
+    """Calibrated real top camera (calibrate_top_camera.py) if available, else the default straight-down one."""
+    if os.path.exists(TOP_CAM_CALIB):
+        with open(TOP_CAM_CALIB) as f:
+            c = json.load(f)
+        return {"pos": np.array(c["pos"]), "quat": np.array(c["quat"]), "fovy": float(c["fovy"])}
+    down = np.column_stack([[0, -1, 0], [1, 0, 0], [0, 0, 1]]).astype(float)  # cam x=-y, y=+x, looks along -z
+    return {"pos": TOP_CAM_POS, "quat": quat_from_mat(down), "fovy": TOP_CAM_FOVY}
 
 
 def scene_to_robot_rot():
@@ -184,8 +219,7 @@ def build_real_model():
         mat.specular = ARM_SPECULAR
     _add_scene_xml(spec)
 
-    down = np.column_stack([[0, -1, 0], [1, 0, 0], [0, 0, 1]]).astype(float)  # cam x=-y, y=+x, looks along -z
-    spec.worldbody.add_camera(name="top_camera", pos=TOP_CAM_POS, quat=quat_from_mat(down), fovy=TOP_CAM_FOVY)
+    spec.worldbody.add_camera(name="top_camera", **top_camera_pose())
     return spec.compile()
 
 
@@ -277,7 +311,7 @@ class RealSetupEnv:
         if rng.random() < NOTE_DEFAULT_PROB:
             note_xy = scene_to_robot([*NOTE_DEFAULT_SCENE, MOUNT_SCENE_POS[2]])[:2] + \
                 rng.uniform(-NOTE_DEFAULT_JITTER, NOTE_DEFAULT_JITTER, 2)
-            note_yaw = np.radians(-87) + rng.uniform(-0.2, 0.2)   # scene.xml: 3 deg, robot frame -87 deg
+            note_yaw = NOTE_DEFAULT_YAW + rng.uniform(-0.2, 0.2)
         else:
             note_xy, note_yaw = self._sample_reachable(rng), rng.uniform(-np.pi, np.pi)
         while True:
@@ -299,14 +333,16 @@ class RealSetupEnv:
             return
         # Black plastic looks anywhere from near-black to dark grey depending on the light
         m.mat_rgba[:, :3] = np.clip(nom["mat_rgba"][:, :3] + rng.uniform(-0.03, 0.06), 0, 1)
-        for name, jitter in (("table_top", 0.04), ("dark_mat_geom", 0.04), ("green_note_geom", 0.05),
-                             ("white_block_geom", 0.04)):
+        # (brightness scale range, per-channel tint). Under real light / auto-exposure the "dark" mat
+        # can look anywhere from dark to light grey, so its brightness varies a lot.
+        for name, scale, jitter in (("table_top", (0.85, 1.05), 0.04), ("dark_mat_geom", (0.8, 2.4), 0.04),
+                                    ("green_note_geom", (0.85, 1.15), 0.05), ("white_block_geom", (0.85, 1.05), 0.04)):
             g = m.geom(name).id
-            m.geom_rgba[g, :3] = np.clip(nom["geom_rgba"][g, :3] * rng.uniform(0.9, 1.1)
+            m.geom_rgba[g, :3] = np.clip(nom["geom_rgba"][g, :3] * rng.uniform(*scale)
                                          + rng.uniform(-jitter, jitter, 3), 0, 1)
         m.light_diffuse[:] = nom["light_diffuse"] * rng.uniform(0.7, 1.3)
         m.light_pos[:] = nom["light_pos"] + rng.uniform(-0.15, 0.15, nom["light_pos"].shape) * [1, 1, 0]
-        m.vis.headlight.ambient[:] = nom["headlight_ambient"] * rng.uniform(0.8, 1.2)
+        m.vis.headlight.ambient[:] = nom["headlight_ambient"] * rng.uniform(0.7, 1.5)
         # The real top camera won't be mounted perfectly: ~1 cm / ~1.5 deg / ~1 deg FOV
         c = self.top_cam
         m.cam_pos[c] = nom["cam_pos"][c] + rng.uniform(-0.01, 0.01, 3)
