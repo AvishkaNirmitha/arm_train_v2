@@ -151,6 +151,67 @@ def ask(auto):
     return {"": "y"}.get(a, a)
 
 
+def go_to_start(arm, env, joint_map, args):
+    """Up to the safe pose above the mat, then the parked pose training episodes start from (arm off to the
+    side, so the top camera sees the whole mat). Lifting first keeps the arm from sweeping across the block."""
+    for name, q in (("safe pose above the mat", env.q_seed), ("parked start pose (as in training)", env.q_home)):
+        target = sim_to_real(q, joint_map)
+        print(f"next: {name} -> {fmt(target)}")
+        a = ask(args.auto)
+        if a == "q":
+            return False
+        if a == "y":
+            r = arm.move(target, args.speed)
+            print("  reached:", fmt(r["joints"]), f"(max err {r['max_err_deg']:.1f} deg)")
+            if r.get("stopped"):
+                return False
+    return True
+
+
+def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, args):
+    """One episode: per phase, fresh images -> model -> (ENTER) -> move. Returns (status, last gripper point)."""
+    n, last_tcp = len(phases), None
+    for k, phase in enumerate(phases):
+        frames = model_view([grab(c) for c in caps])
+        show(frames, [(f"Phase {k + 1}/{n}: {phase}  - thinking ...", (0, 255, 255))])
+        text = policy([Image.fromarray(f) for f in frames], prompt_for(k), None)
+        parsed = parse(text)
+        print(f"\nPhase {k + 1}/{n} {phase}: model says {text!r}")
+        if parsed is None:
+            print("  unparseable answer -> stopping this episode")
+            return "error", last_tcp
+        q, note_unused = parsed
+        tcp = env.forward_tcp(q)
+        target = sim_to_real(q, joint_map)
+        print(f"  target (real deg): {fmt(target)}")
+        print(f"  {note_unused}")
+        print(f"  predicted gripper point (robot frame): x {tcp[0]:.3f}  y {tcp[1]:.3f}  z {tcp[2]:.3f} m")
+        show(frames, [(f"Phase {k + 1}/{n}: {phase}", (0, 255, 255)), (f"model: {text}", (255, 255, 255)),
+                      (f"real target: {fmt(target)}", (200, 200, 200)),
+                      (f"gripper point z = {tcp[2] * 100:.1f} cm above table", (0, 255, 0))])
+        if tcp[2] < MIN_TCP_Z:
+            print(f"  REFUSED: gripper point would be {tcp[2] * 100:.1f} cm above the table (< "
+                  f"{MIN_TCP_Z * 100:.1f} cm)")
+            continue
+        last_tcp = tcp
+        if arm is None:
+            continue
+        a = ask(args.auto)
+        if a == "q":
+            return "quit", last_tcp
+        if a != "y":
+            print("  skipped")
+            continue
+        r = arm.move(target, args.speed)
+        note = f"  clamped to limits: {r['clamped']}" if r["clamped"] else ""
+        note += f"  LOCKED (recalibrate): {r['locked']}" if r.get("locked") else ""
+        print(f"  reached: {fmt(r['joints'])}  (max err {r['max_err_deg']:.1f} deg){note}")
+        if r.get("stopped"):
+            print("  stopped with Ctrl+C on the server -> ending the run")
+            return "stopped", last_tcp
+    return "done", last_tcp
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lora", required=True, help="LoRA adapter dir (checkpoints/<run>/lora or trainer/checkpoint-N)")
@@ -159,6 +220,8 @@ def main():
     ap.add_argument("--no-arm", action="store_true", help="cameras + model only, nothing moves")
     ap.add_argument("--speed", type=float, default=15.0, help="joint speed, deg/s (server caps at 60)")
     ap.add_argument("--auto", action="store_true", help="don't wait for ENTER before each move")
+    ap.add_argument("--episodes", type=int, default=1,
+                    help="episodes in one run (model stays loaded); you move the block in between")
     ap.add_argument("--load-in-4bit", action="store_true")
     ap.add_argument("--task", choices=["reach", "pickplace"], default=None,
                     help="default: the task the checkpoint was trained for (from its dataset's meta.json)")
@@ -173,57 +236,36 @@ def main():
     arm = None if args.no_arm else ArmClient()
     print(f"not driven on the real arm: {sorted(DISABLED)} (predicted, printed, not sent)")
 
+    results = []
     try:
         if arm is not None:
             print("start pose:", fmt(arm.read()["joints"]))
-            # Training episodes start with the arm parked off to the side (real_env.PARK_PAN), so the top camera
-            # sees the whole mat: get the real arm there too, via a safe pose above the mat.
-            for name, q in (("safe pose above the mat", env.q_seed), ("parked start pose (as in training)", env.q_home)):
-                target = sim_to_real(q, joint_map)
-                print(f"next: {name} -> {fmt(target)}")
-                if ask(args.auto) == "y":
-                    r = arm.move(target, args.speed)
-                    print("  reached:", fmt(r["joints"]), f"(max err {r['max_err_deg']:.1f} deg)")
-
-        n = len(phases)
-        for k, phase in enumerate(phases):
-            frames = model_view([grab(c) for c in caps])
-            show(frames, [(f"Phase {k + 1}/{n}: {phase}  - thinking ...", (0, 255, 255))])
-            text = policy([Image.fromarray(f) for f in frames], prompt_for(k), None)
-            parsed = parse(text)
-            print(f"\nPhase {k + 1}/{n} {phase}: model says {text!r}")
-            if parsed is None:
-                print("  unparseable answer -> stopping")
+        for ep in range(args.episodes):
+            print(f"\n========== episode {ep + 1}/{args.episodes} ==========")
+            if arm is not None and not go_to_start(arm, env, joint_map, args):
                 break
-            q, note_unused = parsed
-            tcp = env.forward_tcp(q)
-            target = sim_to_real(q, joint_map)
-            print(f"  target (real deg): {fmt(target)}")
-            print(f"  {note_unused}")
-            print(f"  predicted gripper point (robot frame): x {tcp[0]:.3f}  y {tcp[1]:.3f}  z {tcp[2]:.3f} m")
-            show(frames, [(f"Phase {k + 1}/{n}: {phase}", (0, 255, 255)), (f"model: {text}", (255, 255, 255)),
-                          (f"real target: {fmt(target)}", (200, 200, 200)),
-                          (f"gripper point z = {tcp[2] * 100:.1f} cm above table", (0, 255, 0))])
-            if tcp[2] < MIN_TCP_Z:
-                print(f"  REFUSED: gripper point would be {tcp[2] * 100:.1f} cm above the table (< "
-                      f"{MIN_TCP_Z * 100:.1f} cm)")
-                continue
-            if arm is None:
-                continue
-            a = ask(args.auto)
-            if a == "q":
-                break
-            if a != "y":
-                print("  skipped")
-                continue
-            r = arm.move(target, args.speed)
-            note = f"  clamped to limits: {r['clamped']}" if r["clamped"] else ""
-            note += f"  LOCKED (recalibrate): {r['locked']}" if r.get("locked") else ""
-            print(f"  reached: {fmt(r['joints'])}  (max err {r['max_err_deg']:.1f} deg){note}")
-            if r.get("stopped"):
-                print("  stopped with Ctrl+C on the server -> ending the run")
+            if ep > 0 or args.episodes > 1:
+                a = input("Place the block (18-32 cm from the base), then ENTER = run   q = quit : ").strip().lower()
+                if a == "q":
+                    break
+            status, last_tcp = run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, args)
+            ok = None
+            if status == "done" and args.episodes > 1:
+                a = input("Did it end where it should (gripper just above the block)? [y/n/ENTER = skip] ")
+                ok = {"y": True, "n": False}.get(a.strip().lower())
+            results.append((status, ok, last_tcp))
+            if status in ("quit", "stopped"):
                 break
     finally:
+        if len(results) > 1:
+            print(f"\n=== {len(results)} episodes ===")
+            for i, (status, ok, tcp) in enumerate(results):
+                where = "" if tcp is None else f"  last gripper point x {tcp[0]:.3f} y {tcp[1]:.3f} z {tcp[2]:.3f} m"
+                verdict = {True: "OK", False: "MISSED", None: "-"}[ok]
+                print(f"  episode {i + 1}: {status:8s} {verdict:6s}{where}")
+            judged = [ok for _, ok, _ in results if ok is not None]
+            if judged:
+                print(f"  you marked {sum(judged)}/{len(judged)} as OK")
         if arm is not None:
             if input("\nReturn the arm to its start pose? [Y/n] ").strip().lower() != "n":
                 arm.home()

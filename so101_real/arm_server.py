@@ -57,6 +57,11 @@ class ArmServer:
     def read(self):
         return {m: float(v) for m, v in self.arm.bus.sync_read("Present_Position", num_retry=2).items()}
 
+    def read_raw(self):
+        """Raw servo positions (encoder steps, 0..4095 per turn), before calibration."""
+        return {m: int(v) for m, v in
+                self.arm.bus.sync_read("Present_Position", normalize=False, num_retry=2).items()}
+
     def move(self, target, speed):
         """Smooth (smoothstep) joint interpolation to target {motor: deg}. Unknown / unmounted motors are ignored."""
         ignored = sorted(set(target) - set(self.motors))
@@ -114,7 +119,7 @@ class ArmServer:
 def handle(server, msg):
     cmd = msg.get("cmd")
     if cmd == "read":
-        return {"ok": True, "joints": server.read(), "limits": server.limits}
+        return {"ok": True, "joints": server.read(), "raw": server.read_raw(), "limits": server.limits}
     if cmd == "move":
         return server.move(msg["target"], msg.get("speed", 20.0))
     if cmd == "free":

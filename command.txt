@@ -1,4 +1,6 @@
 source .venv/bin/activate
+source .venv-lerobot/bin/activate
+
 
 
 this is how activate venv
@@ -69,3 +71,5 @@ Connect the controller board to the 'shoulder_pan' motor only and press enter.
         "range_max": 2893
     }
 }
+
+lerobot-find-port

@@ -143,7 +143,7 @@ def main():
             learning_rate=args.lr,
             logging_steps=args.logging_steps,
             save_steps=args.save_steps,
-            save_total_limit=2,
+            save_total_limit=4,
             optim="adamw_8bit",
             weight_decay=0.001,
             lr_scheduler_type="linear",
