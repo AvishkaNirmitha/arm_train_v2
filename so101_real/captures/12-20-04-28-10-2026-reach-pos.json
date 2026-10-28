@@ -1,0 +1,143 @@
+{
+  "name": "12-20-04-28-10-2026-reach-pos",
+  "saved_at": "2026-10-28T12:20:19",
+  "joints_deg": {
+    "shoulder_pan": -34.24175824175824,
+    "shoulder_lift": 125.05494505494505,
+    "elbow_flex": -80.92307692307692,
+    "wrist_flex": -3.340659340659341
+  },
+  "joint_units": "degrees, lerobot convention (0 = middle of the calibrated range)",
+  "motor_positions_raw": {
+    "shoulder_pan": 1826,
+    "shoulder_lift": 3470,
+    "elbow_flex": 1123,
+    "wrist_flex": 1621
+  },
+  "motor_units": "raw servo encoder steps (0..4095 per turn), before calibration",
+  "motors_not_read": [
+    "gripper",
+    "wrist_roll"
+  ],
+  "images": {
+    "wrist": "12-20-04-28-10-2026-reach-pos_wrist.jpg",
+    "top": "12-20-04-28-10-2026-reach-pos_top.jpg"
+  },
+  "cameras": {
+    "wrist": 4,
+    "top": 2
+  },
+  "frame_size": {
+    "wrist": [
+      640,
+      480
+    ],
+    "top": [
+      1920,
+      1080
+    ]
+  },
+  "requested_resolution": {
+    "wrist": [
+      640,
+      480
+    ],
+    "top": [
+      1920,
+      1080
+    ]
+  },
+  "image_size": {
+    "wrist": [
+      368,
+      447
+    ],
+    "top": [
+      1066,
+      1000
+    ]
+  },
+  "crop": {
+    "wrist": {
+      "type": "polygon",
+      "points": [
+        [
+          88.57142857142856,
+          64.28571428571428
+        ],
+        [
+          107.14285714285712,
+          422.85714285714283
+        ],
+        [
+          551.4285714285716,
+          418.5714285714286
+        ],
+        [
+          537.1428571428572,
+          42.85714285714286
+        ]
+      ],
+      "corners": [
+        [
+          88.6,
+          64.3
+        ],
+        [
+          107.1,
+          422.9
+        ],
+        [
+          551.4,
+          418.6
+        ],
+        [
+          537.1,
+          42.9
+        ]
+      ],
+      "saved_as": "perspective_corrected"
+    },
+    "top": {
+      "type": "polygon",
+      "points": [
+        [
+          475.7142857142857,
+          12.857142857142858
+        ],
+        [
+          1547.142857142857,
+          0.0
+        ],
+        [
+          1650.0,
+          968.5714285714286
+        ],
+        [
+          591.4285714285714,
+          1032.857142857143
+        ]
+      ],
+      "corners": [
+        [
+          475.7,
+          12.9
+        ],
+        [
+          1547.1,
+          0.0
+        ],
+        [
+          1650.0,
+          968.6
+        ],
+        [
+          591.4,
+          1032.9
+        ]
+      ],
+      "saved_as": "perspective_corrected"
+    }
+  },
+  "crop_units": "full-frame pixels; box angle_deg turns it clockwise on screen; corners in order (box: top-left, top-right, bottom-right, bottom-left); null = full frame"
+}

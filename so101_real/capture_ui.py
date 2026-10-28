@@ -1,11 +1,13 @@
 """Capture tool: live wrist + top camera views; Save stores both camera images and the arm's joint angles.
 
-Run in .venv; for joint angles arm_server.py must be running in .venv-lerobot (without it, or with --no-arm,
+
 images are saved and the joints are left empty):
 
     python so101_real/capture_ui.py                                # wrist camera 5, top camera 2
     python so101_real/capture_ui.py --wrist-cam 4 --top-cam 2
     python so101_real/capture_ui.py --no-arm --out my_captures
+    python so101_real/capture_ui.py --res 1280x720                 # camera resolution, both cameras
+    python so101_real/capture_ui.py --top-res 1920x1080 --wrist-res 640x480
 
 Each Save writes three files to so101_real/captures/ (or --out):
     <name>.json          joint angles (deg), raw motor positions (encoder steps) + capture info
@@ -20,13 +22,14 @@ The window (OpenCV - Tk crashes with this Python build's display setup):
     camera area   : the camera clicked last is "active" (orange title). Right-click a camera = full frame again.
       box         : drag on a camera = new box; drag inside = move; drag the round handle or [ ] { } = rotate.
                     Saved image = the box content rotated upright.
-      polygon     : p = start a polygon on the active camera, click its corners, Enter (or click the first
-                    corner) = done, Backspace = remove the last corner, Esc = cancel. Afterwards drag a corner
+      polygon     : "Polygon" button or p = start a polygon on the active camera, click its corners, Enter,
+                    the button again or clicking the first corner = done, Backspace = remove the last corner, Esc = cancel. Afterwards drag a corner
                     to adjust it, drag inside to move it. Saved image: 4 corners = perspective-corrected
                     rectangle (click them as the image's top-left, top-right, bottom-right, bottom-left);
                     other corner counts (or --no-warp) = outside blacked out, cut to the bounding box.
     q / Esc       : quit (when not typing a name or drawing a polygon)
-Areas are kept in <out>/crop_areas.json.
+Areas are kept in <out>/crop_areas.json, with the resolution they were drawn at (rescaled if it changes).
+A camera that can't give the requested resolution keeps its nearest mode; the title shows what it really gives.
 """
 import os
 import re
@@ -58,6 +61,7 @@ GREEN = (0, 255, 0)
 NAME_BOX = (PAD, BOX_Y, PAD + 2 * PW - 120, BOX_Y + 40)          # x0, y0, x1, y1
 SAVE_BTN = (NAME_BOX[2] + 12, BOX_Y, W - PAD, BOX_Y + 40)
 FREE_BTN = (W - PAD - 190, TITLE_H + PH + PAD + 4, W - PAD, TITLE_H + PH + PAD + 30)
+POLY_BTN = (FREE_BTN[0] - 200, FREE_BTN[1], FREE_BTN[0] - 10, FREE_BTN[3])   # start / finish a polygon
 PANELS = {"wrist": (PAD, TITLE_H, PAD + PW, TITLE_H + PH),
           "top": (2 * PAD + PW, TITLE_H, 2 * PAD + 2 * PW, TITLE_H + PH)}
 MIN_AREA_PX = 12      # smaller drags are treated as clicks (window pixels)
@@ -73,13 +77,24 @@ def inside(box, x, y):
     return box[0] <= x <= box[2] and box[1] <= y <= box[3]
 
 
-def open_camera(index):
+def parse_res(text):
+    """'1280x720' -> (1280, 720)."""
+    m = re.fullmatch(r"\s*(\d+)\s*[xX*]\s*(\d+)\s*", text or "")
+    if not m:
+        raise argparse.ArgumentTypeError(f"resolution must look like 1280x720, got {text!r}")
+    return int(m.group(1)), int(m.group(2))
+
+
+def open_camera(index, res=(640, 480)):
     cap = cv2.VideoCapture(index)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, res[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, res[1])
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     if not cap.isOpened():
         raise SystemExit(f"camera {index} could not be opened (another program using it? `ls /dev/video*`)")
+    got = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    if got != tuple(res):
+        print(f"camera {index}: asked for {res[0]}x{res[1]}, it gives {got[0]}x{got[1]}")
     return cap
 
 
@@ -142,7 +157,9 @@ class CaptureUI:
         self.args = args
         self.out = os.path.abspath(args.out)
         os.makedirs(self.out, exist_ok=True)
-        self.caps = {"wrist": open_camera(args.wrist_cam), "top": open_camera(args.top_cam)}
+        self.requested_res = {"wrist": args.wrist_res or args.res, "top": args.top_res or args.res}
+        self.caps = {"wrist": open_camera(args.wrist_cam, self.requested_res["wrist"]),
+                     "top": open_camera(args.top_cam, self.requested_res["top"])}
         self.frames = {"wrist": None, "top": None}
         self.arm = None
         if not args.no_arm:
@@ -162,9 +179,13 @@ class CaptureUI:
         self.running = True
         self.areas_file = os.path.join(self.out, "crop_areas.json")
         self.areas = {"wrist": None, "top": None}       # None = full frame
+        self.areas_res = {}                             # resolution each saved area was drawn at
         if os.path.exists(self.areas_file):
             with open(self.areas_file) as f:
-                self.areas.update({k: load_area(v) for k, v in json.load(f).items() if k in self.areas})
+                saved = json.load(f)
+            self.areas.update({k: load_area(v) for k, v in saved.items() if k in self.areas})
+            self.areas_res = saved.get("_frame_size", {})
+        self.areas_checked = False      # rescale the loaded areas once the real frame sizes are known
         self.drag = None                # {"cam", "mode": new / move / rotate / vertex, "start", "area", ...}
         self.active = "top"             # camera the keys apply to
         self.poly = None                # polygon being drawn: {"cam", "points": [...]} (frame pixels)
@@ -175,9 +196,39 @@ class CaptureUI:
         f = self.frames[cam]
         return (f.shape[1], f.shape[0]) if f is not None else (640, 480)
 
+    def view_rect(self, cam):
+        """Where the camera image sits inside its panel (letterboxed, aspect kept): (ox, oy, scale)."""
+        fw, fh = self.frame_size(cam)
+        s = min(PW / fw, PH / fh)
+        return (PW - fw * s) / 2, (PH - fh * s) / 2, s
+
     def scale(self, cam):
         """Frame pixels per window pixel."""
-        return self.frame_size(cam)[0] / PW
+        return 1.0 / self.view_rect(cam)[2]
+
+    def rescale_areas(self):
+        """Areas drawn at another resolution: scale them to the current one (once, after the first frames)."""
+        changed = False
+        for cam, a in self.areas.items():
+            old = self.areas_res.get(cam)
+            new = list(self.frame_size(cam))
+            if a is None or not old or old == new:
+                continue
+            sx, sy = new[0] / old[0], new[1] / old[1]
+            if a["type"] == "polygon":
+                a["points"] = [[x * sx, y * sy] for x, y in a["points"]]
+            else:
+                a["center"] = [a["center"][0] * sx, a["center"][1] * sy]
+                a["size"] = [a["size"][0] * sx, a["size"][1] * sy]
+            print(f"{cam} area: drawn at {old[0]}x{old[1]}, rescaled to {new[0]}x{new[1]}")
+            changed = True
+        self.areas_checked = True
+        if changed:
+            self.write_areas()
+
+    def write_areas(self):
+        with open(self.areas_file, "w") as f:
+            json.dump(dict(self.areas, _frame_size={c: list(self.frame_size(c)) for c in self.areas}), f, indent=2)
 
     def panel_at(self, x, y):
         return next((cam for cam, box in PANELS.items() if inside(box, x, y)), None)
@@ -185,13 +236,14 @@ class CaptureUI:
     def to_frame(self, cam, x, y):
         """Window pixel -> pixel in that camera's full frame (clamped to the frame)."""
         x0, y0 = PANELS[cam][:2]
+        ox, oy, s = self.view_rect(cam)
         fw, fh = self.frame_size(cam)
-        return (float(np.clip((x - x0) * fw / PW, 0, fw)), float(np.clip((y - y0) * fh / PH, 0, fh)))
+        return (float(np.clip((x - x0 - ox) / s, 0, fw)), float(np.clip((y - y0 - oy) / s, 0, fh)))
 
     def to_panel(self, cam, x, y):
         x0, y0 = PANELS[cam][:2]
-        fw, fh = self.frame_size(cam)
-        return (int(round(x0 + x * PW / fw)), int(round(y0 + y * PH / fh)))
+        ox, oy, s = self.view_rect(cam)
+        return (int(round(x0 + ox + x * s)), int(round(y0 + oy + y * s)))
 
     def handle_pos(self, cam, a):
         """Box rotation handle (frame pixels): above the middle of the top edge, turning with the box."""
@@ -202,8 +254,7 @@ class CaptureUI:
     def set_area(self, cam, area, save=True):
         self.areas[cam] = area
         if save:
-            with open(self.areas_file, "w") as f:
-                json.dump(self.areas, f, indent=2)
+            self.write_areas()
         if area is None:
             self.status = f"{cam} camera: saving the full frame"
         elif area["type"] == "box":
@@ -222,6 +273,13 @@ class CaptureUI:
             self.update_drag(event, x, y)
             return
         cam = self.panel_at(x, y)
+        if event == cv2.EVENT_LBUTTONDOWN and inside(POLY_BTN, x, y):
+            self.typing = False
+            if self.poly is None:
+                self.start_polygon()
+            else:
+                self.finish_polygon()
+            return
         if self.poly is not None:                       # drawing a polygon: clicks add corners
             if event == cv2.EVENT_LBUTTONDOWN and cam == self.poly["cam"]:
                 pts = self.poly["points"]
@@ -398,7 +456,6 @@ class CaptureUI:
                                   saved_as="perspective_corrected" if a["type"] == "polygon" and
                                   warps(a, self.args.no_warp) else
                                   "rotated_upright" if a["type"] == "box" else "masked_bounding_box")
-        h, w = self.frames["top"].shape[:2]
         record = {
             "name": name,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -409,7 +466,8 @@ class CaptureUI:
             "motors_not_read": sorted(DISABLED),
             "images": images,
             "cameras": {"wrist": self.args.wrist_cam, "top": self.args.top_cam},
-            "frame_size": [w, h],
+            "frame_size": {cam: list(self.frame_size(cam)) for cam in self.frames},
+            "requested_resolution": {cam: list(r) for cam, r in self.requested_res.items()},
             "image_size": sizes,
             "crop": crops,
             "crop_units": "full-frame pixels; box angle_deg turns it clockwise on screen; corners in order "
@@ -445,14 +503,20 @@ class CaptureUI:
 
     def draw(self):
         img = np.full((H, W, 3), BG, np.uint8)
-        for cam, title in (("wrist", f"CAM 1  Wrist   (index {self.args.wrist_cam})"),
-                           ("top", f"CAM 2  Top Camera   (index {self.args.top_cam})")):
+        for cam, title in (("wrist", f"CAM 1  Wrist   (index {self.args.wrist_cam}"),
+                           ("top", f"CAM 2  Top Camera   (index {self.args.top_cam}")):
+            fw, fh = self.frame_size(cam)
+            title += f", {fw}x{fh})" if self.frames[cam] is not None else ")"
             x0, y0, x1, y1 = PANELS[cam]
             cv2.putText(img, title, (x0, TITLE_H - 10), FONT, 0.6, ACCENT if cam == self.active else FG, 1,
                         cv2.LINE_AA)
             frame = self.frames[cam]
             if frame is not None:
-                view = cv2.resize(frame, (PW, PH))
+                ox, oy, sc = self.view_rect(cam)
+                view = np.zeros((PH, PW, 3), np.uint8)      # letterbox: keep the camera's aspect ratio
+                vw, vh = max(int(round(fw * sc)), 1), max(int(round(fh * sc)), 1)
+                ox, oy = int(round(ox)), int(round(oy))
+                view[oy:oy + vh, ox:ox + vw] = cv2.resize(frame, (vw, vh), interpolation=cv2.INTER_AREA)
                 if self.areas[cam] and not (self.poly and self.poly["cam"] == cam):
                     view = self.draw_area(view, cam, self.areas[cam], x0, y0)
                 if self.poly and self.poly["cam"] == cam:          # polygon being drawn
@@ -473,6 +537,11 @@ class CaptureUI:
         raw = ("motors (raw steps):  " + "   ".join(f"{m} {v}" for m, v in self.raw.items())) if self.raw \
             else "motors (raw steps): -"
         cv2.putText(img, raw, (PAD, jy + 22), FONT, 0.5, DIM, 1, cv2.LINE_AA)
+        drawing = self.poly is not None
+        n = len(self.poly["points"]) if drawing else 0
+        cv2.rectangle(img, POLY_BTN[:2], POLY_BTN[2:], (0, 120, 200) if drawing else (90, 90, 90), -1)
+        cv2.putText(img, f"Finish polygon ({n})" if drawing else f"Polygon on {self.active}",
+                    (POLY_BTN[0] + 10, POLY_BTN[3] - 8), FONT, 0.5, FG, 1, cv2.LINE_AA)
         if self.arm is not None:
             armed = time.time() < self.free_armed_until
             label = "Hold arm" if self.free else ("Click again!" if armed else "Free arm")
@@ -494,7 +563,10 @@ class CaptureUI:
 
     # ── main loop ───────────────────────────────────────────────────────────
     def run(self):
-        cv2.namedWindow(WIN, cv2.WINDOW_AUTOSIZE)
+        # Resizable / maximizable; Qt keeps the aspect ratio and reports mouse clicks in image pixels,
+        # so boxes and polygons work at any window size.
+        cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        cv2.resizeWindow(WIN, W, H)
         cv2.setMouseCallback(WIN, self.on_mouse)
         try:
             while self.running:
@@ -502,6 +574,8 @@ class CaptureUI:
                     ok, frame = cap.read()
                     if ok:
                         self.frames[cam] = frame
+                if not self.areas_checked and all(f is not None for f in self.frames.values()):
+                    self.rescale_areas()
                 if self.arm is not None and time.time() - self.last_joint_read > 0.2:
                     try:
                         r = self.arm.read()
@@ -535,6 +609,10 @@ def main():
     ap.add_argument("--top-cam", type=int, default=2, help="top camera index (default 2)")
     ap.add_argument("--out", default=os.path.join(HERE, "captures"), help="folder for the saved files")
     ap.add_argument("--no-arm", action="store_true", help="don't connect to arm_server.py (images only)")
+    ap.add_argument("--res", type=parse_res, default=(640, 480), metavar="WxH",
+                    help="camera resolution for both cameras (default 640x480)")
+    ap.add_argument("--top-res", type=parse_res, default=None, metavar="WxH", help="top camera only")
+    ap.add_argument("--wrist-res", type=parse_res, default=None, metavar="WxH", help="wrist camera only")
     ap.add_argument("--no-warp", action="store_true",
                     help="4-corner polygons: save the masked area instead of a perspective-corrected rectangle")
     CaptureUI(ap.parse_args()).run()

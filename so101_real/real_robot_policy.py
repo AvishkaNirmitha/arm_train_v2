@@ -35,6 +35,7 @@ from reach_task import ReachEnv, REACH_PHASES, build_reach_prompt, parse_reach_a
 WINDOW = "real SO-101 VLA (what the model sees)"
 IMG_W, IMG_H = 448, 336
 TOP_CAM, WRIST_CAM = 2, 4     # /dev/video2, /dev/video4 on this laptop
+TOP_RES = (1920, 1080)        # top camera mode top_camera_calib.json was measured in (other modes may crop the sensor)
 MIN_TCP_Z = MAT_TOP + 0.015   # refuse targets that would push the gripper point into the table
 
 
@@ -231,7 +232,7 @@ def main():
     print(f"task: {task}")
     joint_map = load_joint_map()
     env, phases, prompt_for, parse = make_task(task)   # env: kinematics only (safety check of predicted poses)
-    caps = [open_camera(args.top_cam), open_camera(args.wrist_cam)]
+    caps = [open_camera(args.top_cam, *TOP_RES), open_camera(args.wrist_cam)]
     policy = VLMPolicy(args.lora, args.load_in_4bit)
     arm = None if args.no_arm else ArmClient()
     print(f"not driven on the real arm: {sorted(DISABLED)} (predicted, printed, not sent)")

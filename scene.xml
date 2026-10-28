@@ -19,10 +19,15 @@
       <geom name="table_top" type="box" size="0.8 0.8 0.02" pos="0 0 -0.02" rgba="0.90 0.90 0.91 1" friction="0.7 0.005 0.0001"/>
     </body>
 
-    <!-- Dark grey square mat (40 cm x 40 cm x 2 mm, measured) -->
+    <!-- Dark grey square mat (39.5 cm x 39.5 cm x 2 mm, measured) -->
     <body name="dark_mat" pos="0 0 0.751">
-      <geom name="dark_mat_geom" type="box" size="0.2 0.2 0.001" rgba="0.24 0.26 0.27 1" friction="0.9 0.005 0.0001"/>
+      <geom name="dark_mat_geom" type="box" size="0.1975 0.1975 0.001" rgba="0.24 0.26 0.27 1" friction="0.9 0.005 0.0001"/>
     </body>
+
+    <!-- SO-101 base origin on the table, facing +y. Tape measure: middle of the base ~18 cm from the mat's left
+         edge (seen from behind the robot). Fitted from the 6 top-camera captures of 28-10-2026: 17.2 cm from the
+         left edge, 1.1 cm in from the mat's front edge -->
+    <site name="robot_mount" pos="-0.026 -0.1867 0.75" size="0.005"/>
 
     <!-- Green sticky note pad / rectangular paper (11 cm x 7 cm x 2 mm, measured) -->
     <body name="green_note" pos="-0.105 0.078 0.753" euler="0 0 3">

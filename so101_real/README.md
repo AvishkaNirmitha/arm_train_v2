@@ -1,6 +1,6 @@
 # SO-101 VLA, real setup
 
-Same pipeline as `../so101_vla/`, in a replica of your real setup (`../scene.xml`). A black SO-101 is mounted at the **center of the mat's front edge**, and the task is "Pick up the white block and place it on the green note."
+Same pipeline as `../so101_vla/`, in a replica of your real setup (`../scene.xml`). A black SO-101 stands on the **mat's front edge, 17.2 cm from its left edge** (`robot_mount` in `scene.xml`), and the task is "Pick up the white block and place it on the green note."
 
 The model sees the top and wrist RGB cameras, the task and the phase, and outputs the next joint keyframe, for example `j: -8.1 18.3 -35.6 95.0 12.5 | gripper: open`.
 
@@ -23,9 +23,10 @@ Datasets go to `datasets/so101_real_v1_<timestamp>/` and training runs go to `ch
 
 All positions are measured from the **shoulder-pan axis on the table top**: +x points straight into the mat and +z points up.
 
-- **Robot:** shoulder-pan axis at the center of the mat's front edge, facing into the mat.
-- **Top camera:** 0.19 m ahead, 0.50 m above the table, looking straight down, with the top of the image pointing away from the robot. Vertical field of view 45°.
-- **Wrist camera:** on the fixed jaw, as in `../so101_ik.py` (`WRIST_CAM_POS`, tilted 25° toward the jaws, 70° field of view).
+- **Robot:** on the mat's front edge, 17.2 cm from the left edge (seen from behind the robot), facing into the mat; set by the `robot_mount` site in `../scene.xml`.
+- **Top camera:** measured by `calibrate_top_camera.py` (`top_camera_calib.json`), at **1920x1080** (`TOP_RES`), centre 4:3 crop. 28-10-2026: 65 cm above the table, tilted 5.7°, vertical field of view 58.5°.
+- **Wrist camera:** on the fixed jaw, as in `../so101_ik.py` (`WRIST_CAM_POS`, tilted 25° toward the jaws, 70° field of view). Pick & place only.
+- **The arm as built (reach task, `as_built=True`):** the moving jaw finger is missing (hidden in the sim), wrist_roll is unpowered and stays at 0, and a USB webcam is zip-tied to the gripper (`WEBCAM_*` in `real_env.py`, fitted from the 28-10 captures): the wrist camera looks 50° off the jaw, so the reach expert puts the **wrist camera** 15 cm, then 6 cm above the block top. Joint offsets: `real_joint_map.json` (fitted from the same captures).
 - **Reach:** the arm grasps the 6.5 cm block between **20 and 32 cm** from its base (closer, it knocks the block over; farther, the wrist can't point straight down). Place the block in that band. The note's usual spot (from `scene.xml`) is about 32 cm away, so the expert aims up to 1.5 cm nearer the robot when the note is that far.
 
 ## Sim-to-real randomization

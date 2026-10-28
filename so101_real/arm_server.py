@@ -24,6 +24,11 @@ CONTROL_HZ = 50
 MAX_SPEED_DEG_S = 60.0      # hard cap, whatever the client asks for
 LIMIT_MARGIN_DEG = 3.0
 TICKS_PER_REV = 4096
+# Hand-set limits (deg) for joints whose calibration recorded a full turn (range 0..4095: the encoder wrapped
+# while sweeping), so the calibrated range says nothing. = sim joint range mapped with real_joint_map.json
+# (lift: sim -100..100 + 99.6; elbow: sim -96.8..96.8 - 91.9), trimmed; the folded rest pose reads 0 / 0.
+MANUAL_LIMITS_DEG = {"shoulder_lift": (-2.0, 195.0), "elbow_flex": (-185.0, 2.0)}
+FULL_TURN_TICKS = 4000
 
 
 class ArmServer:
@@ -39,6 +44,10 @@ class ArmServer:
         # In degrees mode 0 = middle of the calibrated range: limits are +-half the range
         self.limits, self.locked = {}, set()
         for m, c in self.arm.calibration.items():
+            if c.range_max - c.range_min >= FULL_TURN_TICKS and m in MANUAL_LIMITS_DEG:
+                self.limits[m] = MANUAL_LIMITS_DEG[m]
+                print(f"{m}: calibrated range is a full turn - using the hand-set limits {MANUAL_LIMITS_DEG[m]}")
+                continue
             half = (c.range_max - c.range_min) / 2 * 360 / (TICKS_PER_REV - 1) - LIMIT_MARGIN_DEG
             self.limits[m] = (-max(half, 0.0), max(half, 0.0))
             if half < 10:

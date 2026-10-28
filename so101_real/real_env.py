@@ -2,7 +2,8 @@
 
 World layout (table, mat, note, block, lights) is read from ../scene.xml, so that file stays the one description
 of the real setup. Everything is expressed in the ROBOT frame: origin = shoulder-pan axis on the table top,
-+x = straight ahead into the mat, +z = up. The robot is mounted at the centre of the mat's front edge.
++x = straight ahead into the mat, +z = up. The robot stands at the mat's front edge where scene.xml's
+robot_mount site says (17.2 cm from the mat's left edge, not centred).
 
 Cameras:
     top_camera   : the pose measured on the real camera by calibrate_top_camera.py (top_camera_calib.json).
@@ -54,6 +55,7 @@ def _scene_dims():
         "note_half": s.geom_size[gid["green_note_geom"]].copy(),
         "note_xy": d.geom_xpos[gid["green_note_geom"]][:2].copy(),
         "note_yaw": float(np.arctan2(note_R[1, 0], note_R[0, 0])),
+        "mount": d.site_xpos[s.site("robot_mount").id].copy(),
     }
 
 
@@ -63,8 +65,8 @@ MAT_TOP = _DIMS["mat_top"]             # mat top above the table, robot frame
 BLOCK_HALF = _DIMS["block_half"]
 NOTE_HALF = _DIMS["note_half"]
 NOTE_TOP = MAT_TOP + 2 * NOTE_HALF[2]
-# Robot mount in scene.xml coordinates: centre of the mat's front (-y) edge, on the table, facing +y
-MOUNT_SCENE_POS = np.array([_DIMS["mat_center"][0], _DIMS["mat_center"][1] - MAT_HALF, _DIMS["table_top"]])
+# Robot mount in scene.xml coordinates (site robot_mount): on the mat's front (-y) edge, facing +y
+MOUNT_SCENE_POS = _DIMS["mount"]
 
 # TCP: between the jaws. Fixed jaw face at site z=0, so the block centre sits BLOCK_HALF + 3 mm clearance
 # away from it (so101_ik.py uses 12.5 mm for its 25 mm cube).
@@ -102,6 +104,15 @@ PARK_PAN = np.radians(100)  # start pose: home with the base turned away, out of
 ARM_PART_RGBA = (0.07, 0.07, 0.075, 1.0)
 ARM_SERVO_RGBA = (0.13, 0.13, 0.14, 1.0)
 ARM_SPECULAR = 0.25                     # matte PLA, not glossy
+
+# The real arm as built (as_built=True): no moving jaw finger, and a small USB webcam zip-tied to the gripper
+# instead of the official wrist-camera mount. Fitted from the 28-10-2026 captures (top + wrist photos):
+# gripper body frame, -z = along the jaw, +y = robot left and +x = up when the arm points straight ahead.
+WEBCAM_POS = np.array([-0.023, -0.036, -0.059])
+WEBCAM_HALF = np.array([0.0125, 0.035, 0.011])   # 2.5 cm (x) x 7 cm long (y, across the gripper) x 2.2 cm (z)
+WEBCAM_RGBA = (0.22, 0.23, 0.27, 1.0)
+WEBCAM_TILT = 50.0     # deg: lens looks along the jaw, tilted 50 deg towards -x (down when pointing ahead)
+WEBCAM_FOVY = 50.0
 
 TOP_CAM_POS = np.array([0.19, 0.0, 0.50])
 TOP_CAM_FOVY = 45.0
@@ -171,6 +182,26 @@ def _add_robot_parts(spec):
                        quat=quat_from_mat(R_bs @ Ry.T @ R_sc), fovy=70)
 
 
+def _make_as_built(spec):
+    """Hide the missing moving jaw (body, joint and actuator stay so the code is unchanged), add the webcam
+    box and move the wrist camera to its lens."""
+    for g in spec.body("moving_jaw_so101_v1").geoms:
+        g.group, g.contype, g.conaffinity = 3, 0, 0
+    gripper = spec.body("gripper")
+    gripper.add_geom(name="webcam", type=mujoco.mjtGeom.mjGEOM_BOX, pos=WEBCAM_POS, size=WEBCAM_HALF,
+                     rgba=WEBCAM_RGBA, contype=2, conaffinity=1, mass=0.02)
+    t = np.radians(WEBCAM_TILT)
+    # camera x (image right) = body -y; optical axis (camera -z) = body -z tilted towards body -x
+    R = np.column_stack([[0, -1, 0], [np.cos(t), 0, -np.sin(t)], [np.sin(t), 0, np.cos(t)]])
+    cam = next(c for c in spec.cameras if c.name == "wrist_camera")
+    cam.pos = WEBCAM_POS + R @ [0, 0, -WEBCAM_HALF[2]]   # lens on the front face
+    cam.quat = quat_from_mat(R)
+    cam.fovy = WEBCAM_FOVY
+    # IK target at the lens, axes like the tcp site: x = viewing direction, z = image up
+    gripper.add_site(name="wrist_cam", pos=cam.pos, quat=quat_from_mat(np.column_stack([-R[:, 2], -R[:, 0], R[:, 1]])),
+                     size=[0.004, 0, 0], rgba=[0, 0, 1, 1], group=3)
+
+
 def _add_scene_xml(spec):
     """Copy floor, table, mat, note, block, lights and headlight from scene.xml into the robot frame."""
     scene = mujoco.MjModel.from_xml_path(SCENE_XML)   # compiled: angles already in radians
@@ -206,7 +237,7 @@ def _add_scene_xml(spec):
     del q_sr
 
 
-def build_real_model():
+def build_real_model(as_built=False):
     spec = mujoco.MjSpec.from_file(SO101_XML)
     spec.option.timestep = 0.002
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC   # grasp-friendly friction (as in so101_ik.py)
@@ -214,6 +245,8 @@ def build_real_model():
     spec.visual.global_.offwidth = 640
     spec.visual.global_.offheight = 480
     _add_robot_parts(spec)
+    if as_built:
+        _make_as_built(spec)
     for mat in spec.materials:          # robot materials only: the scene geoms have plain rgba
         mat.rgba = ARM_SERVO_RGBA if mat.name.startswith("sts3215") else ARM_PART_RGBA
         mat.specular = ARM_SPECULAR
@@ -263,11 +296,12 @@ def rot_z(a):
 
 # ── Environment ─────────────────────────────────────────────────────────────
 class RealSetupEnv:
-    def __init__(self, randomize=True):
-        m = self.model = build_real_model()
+    def __init__(self, randomize=True, as_built=False):
+        m = self.model = build_real_model(as_built)
         self.data = mujoco.MjData(m)
         self.ik = IK(m)
         self.randomize = randomize
+        self.as_built = as_built
 
         act = {m.actuator(i).name: i for i in range(m.nu)}
         self.arm_act = np.array([act[j] for j in ARM_JOINTS])
@@ -298,7 +332,7 @@ class RealSetupEnv:
     @staticmethod
     def _in_mat(xy):
         s = scene_to_robot_rot()[:2, :2].T @ xy + MOUNT_SCENE_POS[:2]   # robot xy -> scene xy
-        return np.all(np.abs(s) <= MAT_HALF - MAT_MARGIN)
+        return np.all(np.abs(s - _DIMS["mat_center"]) <= MAT_HALF - MAT_MARGIN)
 
     def _sample_reachable(self, rng):
         while True:
@@ -347,12 +381,21 @@ class RealSetupEnv:
         c = self.top_cam
         m.cam_pos[c] = nom["cam_pos"][c] + rng.uniform(-0.01, 0.01, 3)
         dq = np.zeros(4)
-        mujoco.mju_axisAngle2Quat(dq, rng.normal(size=3) / np.linalg.norm(rng.normal(size=3) + 1e-9),
-                                  np.radians(rng.uniform(0, 1.5)))
+        axis = rng.normal(size=3)
+        mujoco.mju_axisAngle2Quat(dq, axis / np.linalg.norm(axis), np.radians(rng.uniform(0, 1.5)))
         q = np.zeros(4)
         mujoco.mju_mulQuat(q, nom["cam_quat"][c], dq)
         m.cam_quat[c] = q
         m.cam_fovy[c] = nom["cam_fovy"][c] + rng.uniform(-1, 1)
+        if self.as_built:
+            # The zip-tied webcam's pose was only estimated from photos: ~1 cm / ~6 deg / ~5 deg FOV
+            c = m.camera("wrist_camera").id
+            m.cam_pos[c] = nom["cam_pos"][c] + rng.uniform(-0.01, 0.01, 3)
+            axis = rng.normal(size=3)
+            mujoco.mju_axisAngle2Quat(dq, axis / np.linalg.norm(axis), np.radians(rng.uniform(0, 6)))
+            mujoco.mju_mulQuat(q, nom["cam_quat"][c], dq)
+            m.cam_quat[c] = q
+            m.cam_fovy[c] = nom["cam_fovy"][c] + rng.uniform(-5, 5)
 
     def reset(self, task, rng=None):
         m, d = self.model, self.data

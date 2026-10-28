@@ -32,7 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from real_env import (RealSetupEnv, TOP_CAM_CALIB, MAT_HALF, MAT_TOP, MOUNT_SCENE_POS, _DIMS,  # noqa: E402
                       scene_to_robot, quat_from_mat)
-from real_robot_policy import crop_to_4_3, TOP_CAM  # noqa: E402
+from real_robot_policy import crop_to_4_3, TOP_CAM, TOP_RES  # noqa: E402
 
 CORNER_NAMES = ["front-left", "front-right", "back-right", "back-left"]   # as seen from the robot
 CHECK_FILE = os.path.join(HERE, "top_camera_check.jpg")
@@ -48,8 +48,8 @@ def mat_corners_robot():
 
 def capture(index):
     cap = cv2.VideoCapture(index)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, TOP_RES[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TOP_RES[1])
     if not cap.isOpened():
         raise SystemExit(f"camera {index} could not be opened")
     for _ in range(10):  # let auto-exposure settle

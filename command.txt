@@ -41,35 +41,17 @@ Connect the controller board to the 'shoulder_pan' motor only and press enter.
 --------------------------------------------
 -------------------------------------------
 
-{
-    "shoulder_pan": {
-        "id": 1,
-        "drive_mode": 0,
-        "homing_offset": -113,
-        "range_min": 2040,
-        "range_max": 2053
-    },
-    "shoulder_lift": {
-        "id": 2,
-        "drive_mode": 0,
-        "homing_offset": 695,
-        "range_min": 839,
-        "range_max": 3199
-    },
-    "elbow_flex": {
-        "id": 3,
-        "drive_mode": 0,
-        "homing_offset": 730,
-        "range_min": 909,
-        "range_max": 3122
-    },
-    "wrist_flex": {
-        "id": 4,
-        "drive_mode": 0,
-        "homing_offset": 603,
-        "range_min": 847,
-        "range_max": 2893
-    }
-}
-
 lerobot-find-port
+
+
+
+----------------------------------------------
+----------------------------------------------
+
+
+
+
+/home/asus/.cache/huggingface/lerobot/calibration/robots/so101_partial/so101_arm.json
+
+
+

@@ -80,7 +80,7 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     with open(os.path.join(out, "meta.json"), "w") as f:
-        json.dump({"robot": "SO-101 (wrist_roll + gripper fixed)", "task": "reach", "instruction": INSTRUCTION,
+        json.dump({"robot": "SO-101 as built (wrist_roll fixed, no moving jaw, zip-tied webcam)", "task": "reach", "instruction": INSTRUCTION,
                    "phases": REACH_PHASES, "cameras": cams, "image_size": [args.width, args.height],
                    "joint_order": REACH_JOINTS, "wrist_roll_fixed_rad": WRIST_ROLL_FIXED,
                    "answer_format": "j: <j1> <j2> <j3> <j4>", "top_camera_calibrated": os.path.exists(TOP_CAM_CALIB),

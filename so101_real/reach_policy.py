@@ -45,7 +45,7 @@ def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window):
             print(f"  {REACH_PHASES[k]:6s} unparseable answer {text!r} -> episode aborted")
             return False, errs
         q = env.full_q(q4)
-        err = 1000 * np.linalg.norm(env.forward_tcp(q) - kf.tcp_pos)
+        err = 1000 * np.linalg.norm(env.forward_cam(q) - kf.tcp_pos)   # tcp_pos = planned wrist camera point
         errs.append((REACH_PHASES[k], err))
         print(f"  {REACH_PHASES[k]:6s} {dt:4.1f}s  target off by {err:5.1f} mm   model: {text}")
         if window:
@@ -86,7 +86,7 @@ def main():
             print(f"episode {ep + 1}/{args.episodes}")
             ok, errs = run_episode(env, renderer, scene_option, policy, rng, cams, viewer, not args.headless)
             results.append((ok, env.reach_error() * 1000, env.block_moved() * 1000, errs))
-            print(f"  -> {'SUCCESS' if ok else 'FAIL'}  (gripper {env.reach_error() * 1000:.1f} mm from the target, "
+            print(f"  -> {'SUCCESS' if ok else 'FAIL'}  (wrist camera {env.reach_error() * 1000:.1f} mm from the target, "
                   f"block moved {env.block_moved() * 1000:.1f} mm)")
             if viewer is not None:
                 if not viewer.is_running():
@@ -110,7 +110,7 @@ def main():
     print(f"\n=== SO-101 reach, {args.policy} policy: success {n_ok}/{len(results)} ===")
     if results:
         final = [r[1] for r in results]
-        print(f"  final gripper error: median {np.median(final):.1f} mm, worst {max(final):.1f} mm (success < 15 mm)")
+        print(f"  final wrist camera error: median {np.median(final):.1f} mm, worst {max(final):.1f} mm (success < 15 mm)")
         print(f"  block knocked (> 5 mm): {sum(r[2] > 5 for r in results)}/{len(results)}")
         for phase in REACH_PHASES:
             e = [x for r in results for p, x in r[3] if p == phase]

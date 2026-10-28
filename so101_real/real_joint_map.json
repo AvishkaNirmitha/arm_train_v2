@@ -1,19 +1,19 @@
 {
   "shoulder_pan": {
     "sign": 1,
-    "offset_deg": 0.0
+    "offset_deg": -5.8
   },
   "shoulder_lift": {
     "sign": 1,
-    "offset_deg": 0.0
+    "offset_deg": 99.6
   },
   "elbow_flex": {
     "sign": 1,
-    "offset_deg": 0.0
+    "offset_deg": -91.9
   },
   "wrist_flex": {
     "sign": 1,
-    "offset_deg": 0.0
+    "offset_deg": 12.9
   },
   "wrist_roll": {
     "sign": 1,

@@ -125,7 +125,7 @@ def main():
     with open(os.path.join(out, "meta.json"), "w") as f:
         json.dump({
             "robot": "SO-101",
-            "scene": "real setup (../scene.xml), robot at the centre of the mat's front edge",
+            "scene": "real setup (../scene.xml), robot on the mat's front edge (scene.xml robot_mount)",
             "instruction": INSTRUCTION,
             "phases": PHASES,
             "cameras": cams,
