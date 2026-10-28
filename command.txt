@@ -55,3 +55,71 @@ lerobot-find-port
 
 
 
+-------------------------------
+----------------------------
+--------------------------
+
+
+
+
+
+
+
+
+we neeed to re create simulation enviramnet newly from these data
+
+
+ROBOT Joint Link Lengths
+
+SO-101 Link Lengths (Joint-by-Joint in cm)
+
+• shoulder_pan (Base Rotation): 6.2 cm (Height from mounting plate to shoulder axis)
+• shoulder_lift (Shoulder Pitch): 5.4 cm (Offset to elbow pivot axis)
+• elbow_flex (Upper Arm / Elbow): 11.3 cm (Length of upper arm segment)
+• wrist_flex (Forearm / Wrist Pitch): 13.5 cm (Length of forearm segment)
+• wrist_roll (Wrist Orientation): 6.1 cm (Length of wrist rotator node)
+• gripper (End Effector): ~7.0 cm (Distance from wrist axis to claw tip)
+
+
+so 101 arm latest calibration file - /home/asus/.cache/huggingface/lerobot/calibration/robots/so101_partial/so101_arm.json
+
+
+full Sence skecth with real dimensions
+
+
+  <---------------------------- 39.5 cm ---------------------------->
++-------------------------------------------------------------------+ ^
+|                                                                   | |
+|                                                             +---+ | |
+|                                                             |c|u| | |
+|                                                             |b|e| | |
+|                                                             +---+ | |
+|                                                                   | |
+|                                                                   | 39.5 cm
+|                                                                   | |
+|                                                                   | |
+|                                                                   | |
+|                                                                   | |
+|                             +--------+                            | |
+|                             |arm base|                            | |
++-----------------------------+--------+----------------------------+ v
+<----------- 23 cm ----------><-- 16 cm ---------------------------->
+
+
+Cube
+
+3 cm
+  +----------+
+  |          | ^
+  |          | |
+  |          | 5 cm
+  |          | |
+  |          | v
+  +----------+
+  
+  
+also some real poses included on  "/home/asus/Desktop/works/60_pick_place_advanced/so101_real/captures" on this folder refer that
+
+and tell me what do think about that and what we can do for that ?
+  
+  
