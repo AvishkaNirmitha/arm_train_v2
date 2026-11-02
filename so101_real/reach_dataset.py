@@ -1,9 +1,10 @@
 """Generate the reach dataset: (top + wrist images, task, phase) -> 4 joint angles. See reach_task.py.
 
-Same images, camera calibration and randomisation as real_dataset.py, but 2 phases per episode (HOVER, REACH)
-and answers with the 4 working joints only:  "j: 12.4 -18.7 33.1 71.6".
+Same images, camera calibration and randomisation as real_dataset.py, but per episode HOVER, REACH and
+--refine REFINE samples (the arm put a bit off the REACH pose, answer = the REACH pose), with answers for the
+4 working joints only:  "j: 12.4 -18.7 33.1 71.6".
 
-    python reach_dataset.py --episodes 8000     # -> datasets/so101_reach_v1_<dd-mm-yyyy-hh-mm-ss>
+    python reach_dataset.py --episodes 6000     # -> datasets/so101_reach_v3_<dd-mm-yyyy-hh-mm-ss>
 """
 import os
 import json
@@ -16,36 +17,50 @@ import numpy as np
 import mujoco
 
 from reach_task import (ReachEnv, REACH_PHASES, REACH_JOINTS, INSTRUCTION, format_reach_action,
-                        build_reach_prompt, WRIST_ROLL_FIXED)
+                        build_reach_prompt, WRIST_ROLL_FIXED, ROLL_RAND_DEG, REFINE_DEG)
 from real_dataset import CAMERAS, make_scene_option, render, augment
-from real_env import TOP_CAM_CALIB
+from real_env import TOP_CAM_CALIB, WEBCAM_RAND_POS, WEBCAM_RAND_DEG, WEBCAM_RAND_FOVY
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def run_episode(env, renderer, scene_option, cams, rng, noise_deg, augment_images):
+def run_episode(env, renderer, scene_option, cams, rng, noise_deg, augment_images, n_refine):
     task = env.sample_task(rng)
     env.reset(task, rng)
     keyframes = env.plan_keyframes()
     if keyframes is None:
         return None, "ik_fail"
     samples = []
-    for k, kf in enumerate(keyframes):
+
+    def add_sample(k, kf):
         frames = render(env, renderer, scene_option, cams)
         if augment_images:
             frames = {c: augment(f, rng) for c, f in frames.items()}
+        current = env.arm_q()[:4]
         samples.append({
             "phase_idx": k,
-            "phase": kf.phase,
+            "phase": REACH_PHASES[k],
             "images": frames,
-            "prompt": build_reach_prompt(k),
+            "prompt": build_reach_prompt(k, current),
             "answer": format_reach_action(kf.q),
-            "current_joints_deg": np.degrees(env.arm_q()[:4]).round(2).tolist(),
+            "current_joints_deg": np.degrees(current).round(2).tolist(),
             "target_joints_deg": np.degrees(kf.q[:4]).round(2).tolist(),
             "target_tcp_pos": kf.tcp_pos.round(4).tolist(),
         })
+
+    for k, kf in enumerate(keyframes):
+        add_sample(k, kf)
         noise = np.radians(rng.normal(0, noise_deg, 4)) if noise_deg > 0 else np.zeros(4)
         env.move_to(kf.q + np.append(noise, 0.0), kf.gripper)   # wrist_roll stays fixed
+    reach = keyframes[-1]
+    for _ in range(n_refine):           # a bit off the REACH pose -> the answer is the REACH pose
+        q_start = env.refine_start(reach.q, rng)
+        if q_start is None:
+            continue
+        env.move_to(q_start, reach.gripper)
+        add_sample(REACH_PHASES.index("REFINE"), reach)
+    if n_refine:
+        env.move_to(reach.q, reach.gripper)
     if not env.is_success():
         return None, "task_fail"
     return ({"block_xy": task["block_xy"].round(4).tolist(),
@@ -55,8 +70,9 @@ def run_episode(env, renderer, scene_option, cams, rng, noise_deg, augment_image
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--episodes", type=int, default=8000, help="successful episodes (2 samples each)")
-    ap.add_argument("--name", default="so101_reach_v1", help="dataset name, timestamp is appended")
+    ap.add_argument("--episodes", type=int, default=6000, help="successful episodes (2 + --refine samples each)")
+    ap.add_argument("--refine", type=int, default=2, help="REFINE samples per episode")
+    ap.add_argument("--name", default="so101_reach_v3", help="dataset name, timestamp is appended")
     ap.add_argument("--out", default=None)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--val-frac", type=float, default=0.05)
@@ -80,11 +96,14 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     with open(os.path.join(out, "meta.json"), "w") as f:
-        json.dump({"robot": "SO-101 as built (wrist_roll fixed, no moving jaw, zip-tied webcam)", "task": "reach", "instruction": INSTRUCTION,
+        json.dump({"robot": "SO-101 as built (wrist_roll taped, no moving jaw, zip-tied webcam)", "task": "reach", "instruction": INSTRUCTION,
                    "phases": REACH_PHASES, "cameras": cams, "image_size": [args.width, args.height],
                    "joint_order": REACH_JOINTS, "wrist_roll_fixed_rad": WRIST_ROLL_FIXED,
                    "answer_format": "j: <j1> <j2> <j3> <j4>", "top_camera_calibrated": os.path.exists(TOP_CAM_CALIB),
-                   "randomized": not args.no_randomize, "noise_deg": args.noise_deg, "seed": args.seed}, f, indent=2)
+                   "randomized": not args.no_randomize, "noise_deg": args.noise_deg, "seed": args.seed,
+                   "refine_per_episode": args.refine, "refine_deg": REFINE_DEG, "roll_rand_deg": ROLL_RAND_DEG,
+                   "webcam_rand": {"pos_m": WEBCAM_RAND_POS, "deg": WEBCAM_RAND_DEG, "fovy_deg": WEBCAM_RAND_FOVY}},
+                  f, indent=2)
 
     files = {s: open(os.path.join(out, f"{s}.jsonl"), "w") for s in ("train", "val")}
     counts = {"ok": 0, "ik_fail": 0, "task_fail": 0}
@@ -92,21 +111,21 @@ def main():
     t0, ep = time.time(), 0
     while counts["ok"] < args.episodes:
         result, status = run_episode(env, renderer, scene_option, cams, rng, args.noise_deg,
-                                     augment_images=not args.no_randomize)
+                                     augment_images=not args.no_randomize, n_refine=args.refine)
         counts[status] += 1
         if result is None:
             continue
         task_info, samples = result
         split = "val" if rng.random() < args.val_frac else "train"
-        for s in samples:
+        for i, s in enumerate(samples):
             paths = []
             for cam in cams:
-                rel = f"images/ep{ep:05d}_p{s['phase_idx']}_{cam}.jpg"
+                rel = f"images/ep{ep:05d}_s{i}_{cam}.jpg"
                 cv2.imwrite(os.path.join(out, rel), cv2.cvtColor(s["images"][cam], cv2.COLOR_RGB2BGR),
                             [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality])
                 paths.append(rel)
             row = {k: v for k, v in s.items() if k != "images"}
-            row.update({"id": f"ep{ep:05d}_p{s['phase_idx']}", "episode": ep, "images": paths, **task_info})
+            row.update({"id": f"ep{ep:05d}_s{i}", "episode": ep, "images": paths, **task_info})
             files[split].write(json.dumps(row) + "\n")
             n_samples[split] += 1
         ep += 1

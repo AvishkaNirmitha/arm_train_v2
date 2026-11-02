@@ -203,6 +203,8 @@ def main():
     # Check image: sim view from the calibrated camera, blended with the real one
     env = RealSetupEnv(randomize=False)
     env.reset(env.sample_task(np.random.default_rng(0)))
+    vis = env.model.vis.global_
+    vis.offwidth, vis.offheight = max(vis.offwidth, w), max(vis.offheight, h)   # default framebuffer is 640x480
     renderer = mujoco.Renderer(env.model, height=h, width=w)
     opt = mujoco.MjvOption()
     opt.sitegroup[:] = 0

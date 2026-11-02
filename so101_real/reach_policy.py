@@ -1,7 +1,8 @@
 """Let a trained reach model drive the SO-101 in the sim (closed loop) and score it. See reach_task.py.
 
 Each phase: render top + wrist cameras -> prompt -> model answers 4 joint angles -> the arm moves there
-(wrist_roll and the gripper stay fixed). Reports how far the gripper ends from the target above the block.
+(wrist_roll and the gripper stay fixed). After HOVER and REACH, --refine REFINE steps (prompt includes the
+current joints) correct the pose. Reports how far the wrist camera ends from the target above the block.
 
     python reach_policy.py --lora checkpoints/<run>/trainer/checkpoint-1000
     python reach_policy.py --lora checkpoints/<run>/lora --episodes 30 --headless
@@ -28,17 +29,18 @@ class ExpertPolicy:
         return format_reach_action(expert_kf.q)
 
 
-def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window):
+def run_episode(env, renderer, scene_option, policy, rng, cams, viewer, window, n_refine):
     env.reset(env.sample_task(rng), rng)
     expert = env.plan_keyframes()
     errs = []
-    for k, kf in enumerate(expert):
+    steps = list(enumerate(expert)) + [(REACH_PHASES.index("REFINE"), expert[-1])] * n_refine
+    for k, kf in steps:
         if viewer is not None:
             viewer.sync()
         rendered = render(env, renderer, scene_option, cams)
         frames = model_view([rendered[c] for c in cams])
         t0 = time.time()
-        text = policy([Image.fromarray(f) for f in frames], build_reach_prompt(k), kf)
+        text = policy([Image.fromarray(f) for f in frames], build_reach_prompt(k, env.arm_q()[:4]), kf)
         dt = time.time() - t0
         q4 = parse_reach_action(text)
         if q4 is None:
@@ -64,6 +66,7 @@ def main():
     ap.add_argument("--lora", help="LoRA adapter dir (a run's lora/ or trainer/checkpoint-N)")
     ap.add_argument("--policy", choices=["vlm", "expert"], default="vlm")
     ap.add_argument("--episodes", type=int, default=5)
+    ap.add_argument("--refine", type=int, default=2, help="REFINE steps after REACH (0 = none)")
     ap.add_argument("--seed", type=int, default=1000, help="scene seed (the dataset used 0, so these are new scenes)")
     ap.add_argument("--no-randomize", action="store_true")
     ap.add_argument("--cams", default="top,wrist")
@@ -84,7 +87,8 @@ def main():
     def run_all(viewer=None):
         for ep in range(args.episodes):
             print(f"episode {ep + 1}/{args.episodes}")
-            ok, errs = run_episode(env, renderer, scene_option, policy, rng, cams, viewer, not args.headless)
+            ok, errs = run_episode(env, renderer, scene_option, policy, rng, cams, viewer, not args.headless,
+                                   args.refine)
             results.append((ok, env.reach_error() * 1000, env.block_moved() * 1000, errs))
             print(f"  -> {'SUCCESS' if ok else 'FAIL'}  (wrist camera {env.reach_error() * 1000:.1f} mm from the target, "
                   f"block moved {env.block_moved() * 1000:.1f} mm)")
@@ -116,6 +120,11 @@ def main():
             e = [x for r in results for p, x in r[3] if p == phase]
             if e:
                 print(f"  {phase:6s} target off by {np.mean(e):6.1f} mm (mean)")
+        for i in range(args.refine):   # the i-th REFINE step of each episode
+            e = [[x for p, x in r[3] if p == "REFINE"] for r in results]
+            e = [x[i] for x in e if len(x) > i]
+            if e:
+                print(f"  REFINE {i + 1}: off by {np.mean(e):6.1f} mm (mean), median {np.median(e):.1f} mm")
 
 
 if __name__ == "__main__":

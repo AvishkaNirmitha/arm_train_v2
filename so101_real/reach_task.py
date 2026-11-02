@@ -2,11 +2,14 @@
 above the white block. Same scene, calibrated top camera and randomisation as real_env.py.
 
 Phases (one model answer each):
-    HOVER : wrist camera 15 cm above the block top, looking down
-    REACH : wrist camera 6 cm above the block top: the block fills the wrist view, as in the real reach
-            captures (the webcam looks 50 deg off the jaw, so pointing the jaw down would show the robot base)
+    HOVER  : wrist camera 15 cm above the block top, looking down
+    REACH  : wrist camera 6 cm above the block top: the block fills the wrist view, as in the real reach
+             captures (the webcam looks 50 deg off the jaw, so pointing the jaw down would show the robot base)
+    REFINE : the arm is near the REACH pose but a bit off; the prompt also gives the current joint angles and
+             the answer is the corrected REACH pose. Can be repeated (closed loop on the real arm).
 The model outputs the 4 working joints:  "j: <shoulder_pan> <shoulder_lift> <elbow_flex> <wrist_flex>".
-wrist_roll stays at WRIST_ROLL_FIXED and the gripper at GRIPPER_FIXED, in the sim and on the real arm.
+The gripper stays at GRIPPER_FIXED. wrist_roll isn't driven (taped roughly straight on the real arm): the sim
+keeps it at WRIST_ROLL_FIXED, randomised by +-ROLL_RAND_DEG per episode.
 
     python reach_task.py                    # watch random expert episodes
     python reach_task.py --headless -n 200  # expert success rate
@@ -22,9 +25,13 @@ from real_env import (RealSetupEnv, Keyframe, IK, ARM_JOINTS, HOME_POS, HOME_SEE
 from so101_ik import GRIPPER_OPEN
 from real_arm_client import load_joint_map
 
-REACH_PHASES = ["HOVER", "REACH"]
+REACH_PHASES = ["HOVER", "REACH", "REFINE"]
+MOVE_PHASES = REACH_PHASES[:2]         # the ones with their own target; REFINE corrects to the REACH target
 REACH_JOINTS = ARM_JOINTS[:4]          # shoulder_pan, shoulder_lift, elbow_flex, wrist_flex
 WRIST_ROLL_FIXED = 0.0                 # rad: middle of its calibrated range (set the real one there)
+ROLL_RAND_DEG = 10.0                   # the taped real wrist_roll is only roughly straight
+REFINE_DEG = (1.5, 4.5)                # REFINE starts: per-joint offset from the REACH pose, std drawn from this
+REFINE_IN_VIEW = 0.8                   # ... and the block centre inside this fraction of the wrist camera's view
 GRIPPER_FIXED = GRIPPER_OPEN           # the jaw isn't driven; keep the sim jaw where the real one sits
 INSTRUCTION = "Move the gripper just above the white block."
 
@@ -53,17 +60,24 @@ def parse_reach_action(text):
     return None if m is None else np.radians([float(v) for v in m.group(1).split()])
 
 
-def build_reach_prompt(phase_idx):
+def build_reach_prompt(phase_idx, current_q4=None):
+    """current_q4 (rad, 4 joints): where the arm is now; required for REFINE, not given for the other phases."""
+    current = ""
+    if REACH_PHASES[phase_idx] == "REFINE":
+        current = "Current joints: " + " ".join(f"{v:.1f}" for v in np.degrees(current_q4[:4])) + "\n"
     return (f"Task: {INSTRUCTION}\n"
             f"Phase {phase_idx + 1}/{len(REACH_PHASES)}: {REACH_PHASES[phase_idx]}\n"
+            f"{current}"
             "Output the target joint angles j1..j4 in degrees.")
 
 
 class ReachEnv(RealSetupEnv):
     def __init__(self, randomize=True):
+        self.roll = WRIST_ROLL_FIXED
         super().__init__(randomize, as_built=True)       # the real arm: no moving jaw, zip-tied webcam
-        # Targets the wrist camera (site at the lens); its private data keeps wrist_roll at 0
+        # Targets the wrist camera (site at the lens); wrist_roll in its private data = self.roll
         self.ik4 = IK(self.model, site="wrist_cam", joints=REACH_JOINTS)
+        self.roll_qadr = self.model.jnt_qposadr[self.model.joint("wrist_roll").id]
         jm = load_joint_map()
         for i, j in enumerate(REACH_JOINTS):
             lo, hi = sorted((np.array(REAL_LIMITS_DEG[j]) - jm[j]["offset_deg"]) * jm[j]["sign"])
@@ -79,9 +93,8 @@ class ReachEnv(RealSetupEnv):
         # No green note on the real mat for reach: hidden (group 3 isn't rendered), parked behind the robot
         self.model.geom_group[self.model.geom("green_note_geom").id] = 3
 
-    @staticmethod
-    def full_q(q4):
-        return np.array([*q4[:4], WRIST_ROLL_FIXED])
+    def full_q(self, q4):
+        return np.array([*q4[:4], self.roll])
 
     def sample_task(self, rng):
         task = super().sample_task(rng)
@@ -94,6 +107,10 @@ class ReachEnv(RealSetupEnv):
                 return task
 
     def reset(self, task, rng=None):
+        rng = rng if rng is not None else np.random.default_rng()
+        self.roll = WRIST_ROLL_FIXED + (np.radians(rng.uniform(-ROLL_RAND_DEG, ROLL_RAND_DEG)) if self.randomize
+                                        else 0.0)
+        self.q_home[4] = self.q_seed[4] = self.ik4.d.qpos[self.roll_qadr] = self.roll
         super().reset(task, rng)
         d = self.data
         d.ctrl[self.grip_act] = GRIPPER_FIXED
@@ -112,13 +129,33 @@ class ReachEnv(RealSetupEnv):
         block_pos, _ = self.block_pose()
         R = top_down_rotation(np.arctan2(block_pos[1], block_pos[0]))   # camera down, image up = away from the base
         keyframes, q = [], self.q_seed4.copy()
-        for phase in REACH_PHASES:
+        for phase in MOVE_PHASES:
             pos = np.array([block_pos[0], block_pos[1], BLOCK_TOP + PHASE_DZ[phase]])
             q, err_pos, err_rot = self.ik4.solve(pos, R, q, iters=300)
             if err_pos > 2e-3 or np.degrees(err_rot) > MAX_TILT_DEG:
                 return None
             keyframes.append(Keyframe(phase, self.full_q(q), GRIPPER_FIXED, pos))
         return keyframes
+
+    def refine_start(self, q_reach, rng, tries=50):
+        """A pose near q_reach (REACH keyframe) for a REFINE sample: inside the limits, the jaw tip >= 1 cm and
+        the wrist camera >= 3 cm above the block top, the block centre in the wrist view (REFINE_IN_VIEW)."""
+        std = rng.uniform(*REFINE_DEG)
+        block = self.block_pose()[0]
+        v_half = np.radians(self.model.cam_fovy[self.model.camera("wrist_camera").id]) / 2
+        h_half = np.arctan(np.tan(v_half) * 4 / 3)
+        for _ in range(tries):
+            q4 = q_reach[:4] + np.radians(rng.normal(0, std, 4))
+            if np.any(q4 < self.ik4.lo) or np.any(q4 > self.ik4.hi):
+                continue
+            pos, R = self.ik4.fk(q4)                   # site axes: x = viewing direction, y = image left, z = up
+            b = R.T @ (block - pos)
+            in_view = (b[0] > 0 and abs(np.arctan2(b[1], b[0])) < REFINE_IN_VIEW * h_half
+                       and abs(np.arctan2(b[2], b[0])) < REFINE_IN_VIEW * v_half)
+            if in_view and (self.forward_tcp(self.full_q(q4))[2] >= BLOCK_TOP + 0.01
+                            and pos[2] >= BLOCK_TOP + 0.03):
+                return self.full_q(q4)
+        return None
 
     def reach_error(self):
         """Distance from the wrist camera to the REACH target above the block (m)."""

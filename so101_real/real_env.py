@@ -34,6 +34,7 @@ from so101_ik import (SO101_XML, IK, ARM_JOINTS, GRIPPER_OPEN, GRIPPER_CLOSED, G
 SCENE_XML = os.path.join(ROOT, "scene.xml")
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP_CAM_CALIB = os.path.join(HERE, "top_camera_calib.json")
+WRIST_CAM_CALIB = os.path.join(HERE, "wrist_camera_calib.json")
 PHASES = ["PRE_GRASP", "GRASP", "CLOSE", "LIFT", "PRE_PLACE", "PLACE", "RELEASE", "RETREAT"]
 
 
@@ -113,6 +114,11 @@ WEBCAM_HALF = np.array([0.0125, 0.035, 0.011])   # 2.5 cm (x) x 7 cm long (y, ac
 WEBCAM_RGBA = (0.22, 0.23, 0.27, 1.0)
 WEBCAM_TILT = 50.0     # deg: lens looks along the jaw, tilted 50 deg towards -x (down when pointing ahead)
 WEBCAM_FOVY = 50.0
+# Randomisation of the webcam pose (randomize=True): it is only estimated, not measured, so the model must
+# cope with a range of mounts; the REFINE phase corrects what is left from the wrist view
+WEBCAM_RAND_POS = 0.02      # m, per axis
+WEBCAM_RAND_DEG = 15.0      # max rotation
+WEBCAM_RAND_FOVY = 8.0      # deg
 
 TOP_CAM_POS = np.array([0.19, 0.0, 0.50])
 TOP_CAM_FOVY = 45.0
@@ -182,6 +188,24 @@ def _add_robot_parts(spec):
                        quat=quat_from_mat(R_bs @ Ry.T @ R_sc), fovy=70)
 
 
+def default_webcam_pose():
+    """Webcam lens estimated from the 28-10 photos: (pos, R, fovy) in the gripper body frame; R columns are
+    the MuJoCo camera axes (x = image right, y = image up, looks along -z)."""
+    t = np.radians(WEBCAM_TILT)
+    # camera x (image right) = body -y; optical axis (camera -z) = body -z tilted towards body -x
+    R = np.column_stack([[0, -1, 0], [np.cos(t), 0, -np.sin(t)], [np.sin(t), 0, np.cos(t)]])
+    return WEBCAM_POS + R @ [0, 0, -WEBCAM_HALF[2]], R, WEBCAM_FOVY   # lens on the front face
+
+
+def webcam_pose():
+    """Measured by fit_wrist_camera.py (wrist_camera_calib.json) if available, else the photo estimate."""
+    if os.path.exists(WRIST_CAM_CALIB):
+        with open(WRIST_CAM_CALIB) as f:
+            c = json.load(f)
+        return np.array(c["pos"]), quat_to_mat(np.array(c["quat"])), float(c["fovy"])
+    return default_webcam_pose()
+
+
 def _make_as_built(spec):
     """Hide the missing moving jaw (body, joint and actuator stay so the code is unchanged), add the webcam
     box and move the wrist camera to its lens."""
@@ -190,16 +214,17 @@ def _make_as_built(spec):
     gripper = spec.body("gripper")
     gripper.add_geom(name="webcam", type=mujoco.mjtGeom.mjGEOM_BOX, pos=WEBCAM_POS, size=WEBCAM_HALF,
                      rgba=WEBCAM_RGBA, contype=2, conaffinity=1, mass=0.02)
-    t = np.radians(WEBCAM_TILT)
-    # camera x (image right) = body -y; optical axis (camera -z) = body -z tilted towards body -x
-    R = np.column_stack([[0, -1, 0], [np.cos(t), 0, -np.sin(t)], [np.sin(t), 0, np.cos(t)]])
+    pos, R, fovy = webcam_pose()
     cam = next(c for c in spec.cameras if c.name == "wrist_camera")
-    cam.pos = WEBCAM_POS + R @ [0, 0, -WEBCAM_HALF[2]]   # lens on the front face
-    cam.quat = quat_from_mat(R)
-    cam.fovy = WEBCAM_FOVY
+    cam.pos, cam.quat, cam.fovy = pos, quat_from_mat(R), fovy
     # IK target at the lens, axes like the tcp site: x = viewing direction, z = image up
-    gripper.add_site(name="wrist_cam", pos=cam.pos, quat=quat_from_mat(np.column_stack([-R[:, 2], -R[:, 0], R[:, 1]])),
-                     size=[0.004, 0, 0], rgba=[0, 0, 1, 1], group=3)
+    gripper.add_site(name="wrist_cam", pos=cam.pos, quat=cam_site_quat(R), size=[0.004, 0, 0], rgba=[0, 0, 1, 1],
+                     group=3)
+
+
+def cam_site_quat(R):
+    """wrist_cam site orientation for a camera with axes R (x = viewing direction, z = image up)."""
+    return quat_from_mat(np.column_stack([-R[:, 2], -R[:, 0], R[:, 1]]))
 
 
 def _add_scene_xml(spec):
@@ -325,7 +350,7 @@ class RealSetupEnv:
             "geom_rgba": m.geom_rgba.copy(), "light_diffuse": m.light_diffuse.copy(),
             "light_pos": m.light_pos.copy(), "cam_pos": m.cam_pos.copy(), "cam_quat": m.cam_quat.copy(),
             "cam_fovy": m.cam_fovy.copy(), "headlight_ambient": m.vis.headlight.ambient.copy(),
-            "mat_rgba": m.mat_rgba.copy(),
+            "mat_rgba": m.mat_rgba.copy(), "site_pos": m.site_pos.copy(), "site_quat": m.site_quat.copy(),
         }
 
     # ── Task setup ─────────────────────────────────────────────────────────
@@ -361,6 +386,7 @@ class RealSetupEnv:
         m.light_diffuse[:] = nom["light_diffuse"]
         m.light_pos[:] = nom["light_pos"]
         m.cam_pos[:], m.cam_quat[:], m.cam_fovy[:] = nom["cam_pos"], nom["cam_quat"], nom["cam_fovy"]
+        m.site_pos[:], m.site_quat[:] = nom["site_pos"], nom["site_quat"]
         m.vis.headlight.ambient[:] = nom["headlight_ambient"]
         m.mat_rgba[:] = nom["mat_rgba"]
         if not self.randomize:
@@ -388,14 +414,18 @@ class RealSetupEnv:
         m.cam_quat[c] = q
         m.cam_fovy[c] = nom["cam_fovy"][c] + rng.uniform(-1, 1)
         if self.as_built:
-            # The zip-tied webcam's pose was only estimated from photos: ~1 cm / ~6 deg / ~5 deg FOV
+            # The zip-tied webcam's pose was only estimated from photos (WEBCAM_RAND_*); the wrist_cam site
+            # (IK target) moves with it, so the expert always centres the block under the camera rendered
             c = m.camera("wrist_camera").id
-            m.cam_pos[c] = nom["cam_pos"][c] + rng.uniform(-0.01, 0.01, 3)
+            m.cam_pos[c] = nom["cam_pos"][c] + rng.uniform(-WEBCAM_RAND_POS, WEBCAM_RAND_POS, 3)
             axis = rng.normal(size=3)
-            mujoco.mju_axisAngle2Quat(dq, axis / np.linalg.norm(axis), np.radians(rng.uniform(0, 6)))
+            mujoco.mju_axisAngle2Quat(dq, axis / np.linalg.norm(axis), np.radians(rng.uniform(0, WEBCAM_RAND_DEG)))
             mujoco.mju_mulQuat(q, nom["cam_quat"][c], dq)
             m.cam_quat[c] = q
-            m.cam_fovy[c] = nom["cam_fovy"][c] + rng.uniform(-5, 5)
+            m.cam_fovy[c] = nom["cam_fovy"][c] + rng.uniform(-WEBCAM_RAND_FOVY, WEBCAM_RAND_FOVY)
+            s = m.site("wrist_cam").id
+            m.site_pos[s] = m.cam_pos[c]
+            m.site_quat[s] = cam_site_quat(quat_to_mat(q))
 
     def reset(self, task, rng=None):
         m, d = self.model, self.data

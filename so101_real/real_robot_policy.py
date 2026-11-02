@@ -29,8 +29,8 @@ sys.path.insert(0, HERE)
 from real_env import RealSetupEnv, PHASES, parse_action, gripper_word, MAT_TOP    # noqa: E402
 from real_dataset import build_prompt                                             # noqa: E402
 from real_policy import VLMPolicy, model_view                                     # noqa: E402
-from real_arm_client import ArmClient, load_joint_map, sim_to_real, DISABLED      # noqa: E402
-from reach_task import ReachEnv, REACH_PHASES, build_reach_prompt, parse_reach_action  # noqa: E402
+from real_arm_client import ArmClient, load_joint_map, sim_to_real, real_to_sim, DISABLED  # noqa: E402
+from reach_task import ReachEnv, REACH_PHASES, MOVE_PHASES, build_reach_prompt, parse_reach_action  # noqa: E402
 
 WINDOW = "real SO-101 VLA (what the model sees)"
 IMG_W, IMG_H = 448, 336
@@ -121,15 +121,17 @@ def checkpoint_task(lora_dir):
     raise SystemExit(f"can't tell which task {lora_dir} was trained for: pass --task reach / pickplace")
 
 
-def make_task(name):
-    """env, phases, prompt builder and answer -> (5 sim joints, note about the unused motors)."""
+def make_task(name, n_refine=0):
+    """env, phase names, prompt builder (step index, current sim joints) and answer -> (5 sim joints, note about
+    the unused motors). Reach: HOVER, REACH, then n_refine REFINE steps."""
     if name == "reach":
         env = ReachEnv(randomize=False)
+        phases = MOVE_PHASES + ["REFINE"] * n_refine
 
         def parse(text):
             q4 = parse_reach_action(text)
             return None if q4 is None else (env.full_q(q4), "wrist_roll / gripper fixed (reach task)")
-        return env, REACH_PHASES, build_reach_prompt, parse
+        return env, phases, lambda k, current: build_reach_prompt(REACH_PHASES.index(phases[k]), current), parse
     env = RealSetupEnv(randomize=False)
 
     def parse(text):
@@ -138,7 +140,7 @@ def make_task(name):
             return None
         q, grip = r
         return q, f"ignored: wrist_roll {np.degrees(q[4]):.1f} deg, gripper {gripper_word(grip)}"
-    return env, PHASES, build_prompt, parse
+    return env, PHASES, lambda k, current: build_prompt(k), parse
 
 
 def fmt(joints):
@@ -172,10 +174,12 @@ def go_to_start(arm, env, joint_map, args):
 def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, args):
     """One episode: per phase, fresh images -> model -> (ENTER) -> move. Returns (status, last gripper point)."""
     n, last_tcp = len(phases), None
+    # Current sim joints (REFINE prompts): read from the arm; with --no-arm assume the last target was reached
+    current = env.q_home.copy() if arm is None else real_to_sim(arm.read()["joints"], joint_map, env.q_home)
     for k, phase in enumerate(phases):
         frames = model_view([grab(c) for c in caps])
         show(frames, [(f"Phase {k + 1}/{n}: {phase}  - thinking ...", (0, 255, 255))])
-        text = policy([Image.fromarray(f) for f in frames], prompt_for(k), None)
+        text = policy([Image.fromarray(f) for f in frames], prompt_for(k, current), None)
         parsed = parse(text)
         print(f"\nPhase {k + 1}/{n} {phase}: model says {text!r}")
         if parsed is None:
@@ -196,6 +200,7 @@ def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, ar
             continue
         last_tcp = tcp
         if arm is None:
+            current = q
             continue
         a = ask(args.auto)
         if a == "q":
@@ -204,6 +209,7 @@ def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, ar
             print("  skipped")
             continue
         r = arm.move(target, args.speed)
+        current = real_to_sim(r["joints"], joint_map, q)
         note = f"  clamped to limits: {r['clamped']}" if r["clamped"] else ""
         note += f"  LOCKED (recalibrate): {r['locked']}" if r.get("locked") else ""
         print(f"  reached: {fmt(r['joints'])}  (max err {r['max_err_deg']:.1f} deg){note}")
@@ -224,6 +230,8 @@ def main():
     ap.add_argument("--episodes", type=int, default=1,
                     help="episodes in one run (model stays loaded); you move the block in between")
     ap.add_argument("--load-in-4bit", action="store_true")
+    ap.add_argument("--refine", type=int, default=2,
+                    help="reach: REFINE steps after REACH (only for models trained with REFINE, e.g. reach v3)")
     ap.add_argument("--task", choices=["reach", "pickplace"], default=None,
                     help="default: the task the checkpoint was trained for (from its dataset's meta.json)")
     args = ap.parse_args()
@@ -231,7 +239,7 @@ def main():
     task = args.task or checkpoint_task(args.lora)
     print(f"task: {task}")
     joint_map = load_joint_map()
-    env, phases, prompt_for, parse = make_task(task)   # env: kinematics only (safety check of predicted poses)
+    env, phases, prompt_for, parse = make_task(task, args.refine)   # env: kinematics only (safety check of predicted poses)
     caps = [open_camera(args.top_cam, *TOP_RES), open_camera(args.wrist_cam)]
     policy = VLMPolicy(args.lora, args.load_in_4bit)
     arm = None if args.no_arm else ArmClient()

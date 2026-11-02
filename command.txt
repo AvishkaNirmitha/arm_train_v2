@@ -1,6 +1,10 @@
 source .venv/bin/activate
 source .venv-lerobot/bin/activate
 
+FT_SCServo_Debug_Qt
+
+deactivate
+
 
 
 this is how activate venv
@@ -122,4 +126,34 @@ also some real poses included on  "/home/asus/Desktop/works/60_pick_place_advanc
 
 and tell me what do think about that and what we can do for that ?
   
-  
+  ------------------------------------------
+  -----------------------------------------
+  ----------------------------------------
+
+
+
+  1. Where to put the block (top view of the mat)
+
+                     back edge of mat
+   +-----------------------------------------------+
+   |                                               |
+   |            (keep 12 cm from all edges)        |
+   |                                               |
+   |      [B]                                      |
+   |                                               |
+   |                 [A]                [C]        |
+   |                                               |
+   |                                               |
+   |                                               |
+   |                                               |
+   |                 +-------+                     |
+   |                 |  arm  |                     |
+   +-----------------+-------+---------------------+
+                     front edge
+
+   Distance from LEFT edge / from FRONT edge of the mat:
+   [A]  20 cm / 20 cm
+   [B]  13 cm / 24 cm
+   [C]  27 cm / 21 cm
+Turn the block to a different angle at each position, e.g. A straight, B about 30°, C about 60°.
+
