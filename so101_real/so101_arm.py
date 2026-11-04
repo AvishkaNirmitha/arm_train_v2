@@ -1,18 +1,19 @@
 """The real SO-101 follower arm, driven through lerobot with only the motors attached so far.
 
 lerobot's `so101_follower` expects all 6 motors to answer when it connects. This wraps it with a motor list,
-ATTACHED, so the arm runs without wrist_roll and the gripper until they are mounted. Its calibration file lives
+ATTACHED, so the arm runs without wrist_roll (taped, not driven) until it is mounted. Its calibration file lives
 under robots/so101_partial (not so101_follower), so the stock robot never picks up a partial calibration.
 
 Run in .venv-lerobot (Python 3.12), from the project root:
 
     python so101_real/so101_arm.py setup                            # give ids to the ATTACHED motors, one at a time
-    python so101_real/so101_arm.py setup --motors wrist_roll gripper  # later: only the new motors
-    python so101_real/so101_arm.py calibrate
+    python so101_real/so101_arm.py setup --motors wrist_roll         # later: only the new motor
+    python so101_real/so101_arm.py calibrate                        # all ATTACHED motors
+    python so101_real/so101_arm.py calibrate --motors gripper       # only these; the others keep their calibration
     python so101_real/so101_arm.py read                             # torque off, print joint angles (deg)
 
-Adding wrist_roll and the gripper later: `setup --motors wrist_roll gripper` (each one alone on the board),
-mount and chain them, add them to ATTACHED, then `calibrate` again (all motors are recalibrated together).
+Adding a motor later: `setup --motors wrist_roll` (alone on the board), mount and chain it, add it to ATTACHED,
+then `calibrate --motors wrist_roll`: recalibrating the others would move their zeros (real_joint_map.json).
 """
 import time
 import argparse
@@ -21,7 +22,7 @@ from lerobot.motors import SerialMotorsBus
 from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 
 ALL_MOTORS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")  # ids 1..6
-ATTACHED = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")  # add "wrist_roll", "gripper" when mounted
+ATTACHED = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "gripper")  # add "wrist_roll" when mounted
 
 PORT = "/dev/ttyACM0"
 ROBOT_ID = "so101_arm"
@@ -37,13 +38,27 @@ class SO101Arm(SOFollower):
         self.bus = SerialMotorsBus(port=config.port, motors={m: self.bus.motors[m] for m in motors},
                                    calibration=self.calibration)
 
-    def calibrate(self):
-        # A file from before a motor was added doesn't cover it: recalibrate instead of offering the file
-        if set(self.bus.motors) <= set(self.calibration) and self._keep_calibration_file(self.bus):
-            return
+    def configure(self):
+        # Goal := present position before configure() switches torque on, so nothing jumps (raw steps: works
+        # for a motor that isn't calibrated yet)
+        self.bus.disable_torque()
+        self.bus.sync_write("Goal_Position", self.bus.sync_read("Present_Position", normalize=False),
+                            normalize=False)
+        super().configure()
+
+    def calibrate(self, motors=None):
+        """motors: only these are recalibrated, the others keep their calibration from the file."""
+        if motors is None:
+            # A file from before a motor was added doesn't cover it: recalibrate instead of offering the file
+            if set(self.bus.motors) <= set(self.calibration) and self._keep_calibration_file(self.bus):
+                return
+            motors = list(self.bus.motors)
+        elif missing := [m for m in self.bus.motors if m not in motors and m not in self.calibration]:
+            raise SystemExit(f"{missing} have no calibration yet: add them to --motors")
         print("Video walkthrough: https://huggingface.co/docs/lerobot/main/en/so101#calibration-video")
-        full_turn = [m for m in ("wrist_roll",) if m in self.bus.motors]
-        self.calibration = self.bus.record_calibration("position", full_turn_motors=full_turn)
+        full_turn = [m for m in ("wrist_roll",) if m in motors]
+        new = self.bus.record_calibration("position", full_turn_motors=full_turn, motors=motors)
+        self.calibration = {m: new[m] if m in new else self.calibration[m] for m in self.bus.motors}
         self.bus.write_calibration(self.calibration)
         self._save_calibration()
         print("Calibration saved to", self.calibration_fpath)
@@ -57,7 +72,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["setup", "calibrate", "read"])
     ap.add_argument("--motors", nargs="+", choices=ALL_MOTORS,
-                    help="setup only: these motors (default ATTACHED), in this order")
+                    help="setup: these motors (default ATTACHED), in this order; calibrate: only these")
     ap.add_argument("--port", default=PORT)
     ap.add_argument("--id", default=ROBOT_ID)
     args = ap.parse_args()
@@ -71,7 +86,7 @@ def main():
     arm.connect(calibrate=False)
     try:
         if args.command == "calibrate":
-            arm.calibrate()
+            arm.calibrate(args.motors)
         else:
             if not arm.is_calibrated:
                 raise SystemExit("Not calibrated: run `python so101_real/so101_arm.py calibrate` first.")

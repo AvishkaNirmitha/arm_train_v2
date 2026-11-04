@@ -24,7 +24,7 @@ import mujoco
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from real_env import RealSetupEnv, GRIPPER_OPEN                          # noqa: E402
+from real_env import RealSetupEnv                                        # noqa: E402
 from real_arm_client import ArmClient, load_joint_map, real_to_sim       # noqa: E402
 from real_robot_policy import TOP_RES                                    # noqa: E402
 
@@ -50,7 +50,7 @@ def main():
     env = RealSetupEnv(randomize=False, as_built=True)
     m, d = env.model, env.data
     mujoco.mj_resetData(m, d)
-    d.qpos[env.grip_qadr] = GRIPPER_OPEN
+    d.qpos[env.grip_qadr] = env.grip_open
     renderer = mujoco.Renderer(m, height=480, width=640) if args.top_cam is not None else None
     cap = open_camera(args.top_cam, *TOP_RES) if args.top_cam is not None else None
     opt = mujoco.MjvOption()

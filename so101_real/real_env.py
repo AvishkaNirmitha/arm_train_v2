@@ -8,7 +8,8 @@ robot_mount site says (17.2 cm from the mat's left edge, not centred).
 Cameras:
     top_camera   : the pose measured on the real camera by calibrate_top_camera.py (top_camera_calib.json).
                    Without that file: 0.19 m ahead, 0.50 m above the table, straight down, 45 deg vertical FOV.
-    wrist_camera : on the fixed jaw, as in ../so101_ik.py (WRIST_CAM_POS / WRIST_CAM_TILT, 70 deg)
+    wrist_camera : on the fixed jaw, as in ../so101_ik.py (WRIST_CAM_POS / WRIST_CAM_TILT, 70 deg); with
+                   as_built=True the real webcam on top of the wrist (WEBCAM_LENS_*)
 
 IK plans 8 joint keyframes (training labels); the arm itself is driven only in joint space by `move_to`.
 
@@ -106,19 +107,27 @@ ARM_PART_RGBA = (0.07, 0.07, 0.075, 1.0)
 ARM_SERVO_RGBA = (0.13, 0.13, 0.14, 1.0)
 ARM_SPECULAR = 0.25                     # matte PLA, not glossy
 
-# The real arm as built (as_built=True): no moving jaw finger, and a small USB webcam zip-tied to the gripper
-# instead of the official wrist-camera mount. Fitted from the 28-10-2026 captures (top + wrist photos):
-# gripper body frame, -z = along the jaw, +y = robot left and +x = up when the arm points straight ahead.
-WEBCAM_POS = np.array([-0.023, -0.036, -0.059])
-WEBCAM_HALF = np.array([0.0125, 0.035, 0.011])   # 2.5 cm (x) x 7 cm long (y, across the gripper) x 2.2 cm (z)
+# The real arm as built (as_built=True, since 04-11-2026): the whole gripper with its moving jaw, wrist_roll
+# taped (not driven), and a small USB webcam on top of the wrist looking along the fingers (both fingertips in
+# view). Lens pose in the gripper body frame (MuJoCo camera axes: x = image right, y = image up, looks along -z),
+# fitted to the robot's silhouette in the 04-11 wrist photos (gripper open + closed, 95 % overlap).
+WEBCAM_LENS_POS = np.array([-0.0090, 0.0601, -0.0080])
+WEBCAM_LENS_QUAT = np.array([0.92512, -0.37443, -0.05439, -0.03146])
+WEBCAM_FOVY = 43.6
+WEBCAM_HALF = np.array([0.035, 0.012, 0.012])    # camera axes: 7 cm wide, 2.4 cm high and deep, behind the lens
 WEBCAM_RGBA = (0.22, 0.23, 0.27, 1.0)
-WEBCAM_TILT = 50.0     # deg: lens looks along the jaw, tilted 50 deg towards -x (down when pointing ahead)
-WEBCAM_FOVY = 50.0
-# Randomisation of the webcam pose (randomize=True): it is only estimated, not measured, so the model must
-# cope with a range of mounts; the REFINE phase corrects what is left from the wrist view
-WEBCAM_RAND_POS = 0.02      # m, per axis
-WEBCAM_RAND_DEG = 15.0      # max rotation
-WEBCAM_RAND_FOVY = 8.0      # deg
+# Randomisation of the webcam pose (randomize=True): the mount shifted a little between photos
+WEBCAM_RAND_POS = 0.01      # m, per axis
+WEBCAM_RAND_DEG = 8.0       # max rotation
+WEBCAM_RAND_FOVY = 4.0      # deg
+# The taped wrist_roll: jaws open sideways, moving finger on the robot's right (arm pointing ahead)
+AS_BUILT_WRIST_ROLL = np.radians(-90.0)
+# Real gripper (lerobot 0..100): 5.3 = fingers touching, 93.8 = open as far as the moving finger stays in the
+# wrist view (calibrated range = 38.2 deg per 100). Sim jaw angle of the same poses, from the same fit:
+AS_BUILT_GRIPPER_OPEN = np.radians(28.1)
+AS_BUILT_GRIPPER_TOUCH = np.radians(-5.7)
+REAL_GRIPPER_OPEN, REAL_GRIPPER_TOUCH = 93.8, 5.3
+REAL_GRIPPER_CLOSED = 2.0   # command when grasping: past touching, the servo squeezes (torque-limited)
 
 TOP_CAM_POS = np.array([0.19, 0.0, 0.50])
 TOP_CAM_FOVY = 45.0
@@ -189,12 +198,9 @@ def _add_robot_parts(spec):
 
 
 def default_webcam_pose():
-    """Webcam lens estimated from the 28-10 photos: (pos, R, fovy) in the gripper body frame; R columns are
+    """Webcam lens fitted from the 04-11 photos: (pos, R, fovy) in the gripper body frame; R columns are
     the MuJoCo camera axes (x = image right, y = image up, looks along -z)."""
-    t = np.radians(WEBCAM_TILT)
-    # camera x (image right) = body -y; optical axis (camera -z) = body -z tilted towards body -x
-    R = np.column_stack([[0, -1, 0], [np.cos(t), 0, -np.sin(t)], [np.sin(t), 0, np.cos(t)]])
-    return WEBCAM_POS + R @ [0, 0, -WEBCAM_HALF[2]], R, WEBCAM_FOVY   # lens on the front face
+    return WEBCAM_LENS_POS.copy(), quat_to_mat(WEBCAM_LENS_QUAT), WEBCAM_FOVY
 
 
 def webcam_pose():
@@ -207,14 +213,15 @@ def webcam_pose():
 
 
 def _make_as_built(spec):
-    """Hide the missing moving jaw (body, joint and actuator stay so the code is unchanged), add the webcam
-    box and move the wrist camera to its lens."""
-    for g in spec.body("moving_jaw_so101_v1").geoms:
-        g.group, g.contype, g.conaffinity = 3, 0, 0
+    """Add the webcam box (just behind its lens) and move the wrist camera to the lens."""
     gripper = spec.body("gripper")
-    gripper.add_geom(name="webcam", type=mujoco.mjtGeom.mjGEOM_BOX, pos=WEBCAM_POS, size=WEBCAM_HALF,
-                     rgba=WEBCAM_RGBA, contype=2, conaffinity=1, mass=0.02)
     pos, R, fovy = webcam_pose()
+    gripper.add_geom(name="webcam", type=mujoco.mjtGeom.mjGEOM_BOX, pos=pos + R @ [0, 0, WEBCAM_HALF[2] + 0.002],
+                     quat=quat_from_mat(R), size=WEBCAM_HALF, rgba=WEBCAM_RGBA, contype=2, conaffinity=1, mass=0.02)
+    # Its clip, from the back of the webcam down to the wrist (top camera only: >45 deg below the lens axis)
+    gripper.add_geom(name="webcam_mount", type=mujoco.mjtGeom.mjGEOM_CAPSULE, size=[0.008, 0, 0],
+                     fromto=[*(pos + R @ [0, -0.010, 0.012]), 0, 0, 0], rgba=ARM_PART_RGBA, contype=0, conaffinity=0,
+                     mass=0.005)
     cam = next(c for c in spec.cameras if c.name == "wrist_camera")
     cam.pos, cam.quat, cam.fovy = pos, quat_from_mat(R), fovy
     # IK target at the lens, axes like the tcp site: x = viewing direction, z = image up
@@ -327,6 +334,7 @@ class RealSetupEnv:
         self.ik = IK(m)
         self.randomize = randomize
         self.as_built = as_built
+        self.grip_open = AS_BUILT_GRIPPER_OPEN if as_built else GRIPPER_OPEN
 
         act = {m.actuator(i).name: i for i in range(m.nu)}
         self.arm_act = np.array([act[j] for j in ARM_JOINTS])
@@ -414,8 +422,8 @@ class RealSetupEnv:
         m.cam_quat[c] = q
         m.cam_fovy[c] = nom["cam_fovy"][c] + rng.uniform(-1, 1)
         if self.as_built:
-            # The zip-tied webcam's pose was only estimated from photos (WEBCAM_RAND_*); the wrist_cam site
-            # (IK target) moves with it, so the expert always centres the block under the camera rendered
+            # The webcam mount isn't perfectly rigid (WEBCAM_RAND_*); the wrist_cam site (reach IK target)
+            # moves with it, so the reach expert always centres the block under the camera rendered
             c = m.camera("wrist_camera").id
             m.cam_pos[c] = nom["cam_pos"][c] + rng.uniform(-WEBCAM_RAND_POS, WEBCAM_RAND_POS, 3)
             axis = rng.normal(size=3)
@@ -433,8 +441,8 @@ class RealSetupEnv:
         mujoco.mj_resetData(m, d)
         d.qpos[self.arm_qadr] = self.q_home
         d.ctrl[self.arm_act] = self.q_home
-        d.qpos[self.grip_qadr] = GRIPPER_OPEN
-        d.ctrl[self.grip_act] = GRIPPER_OPEN
+        d.qpos[self.grip_qadr] = self.grip_open
+        d.ctrl[self.grip_act] = self.grip_open
         for qadr, xy, z, yaw in ((self.block_qadr, task["block_xy"], MAT_TOP + BLOCK_HALF[2], task["block_yaw"]),
                                  (self.note_qadr, task["note_xy"], MAT_TOP + NOTE_HALF[2], task["note_yaw"])):
             d.qpos[qadr:qadr + 3] = [*xy, z]

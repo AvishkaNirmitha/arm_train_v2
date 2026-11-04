@@ -8,8 +8,8 @@ Phases (one model answer each):
     REFINE : the arm is near the REACH pose but a bit off; the prompt also gives the current joint angles and
              the answer is the corrected REACH pose. Can be repeated (closed loop on the real arm).
 The model outputs the 4 working joints:  "j: <shoulder_pan> <shoulder_lift> <elbow_flex> <wrist_flex>".
-The gripper stays at GRIPPER_FIXED. wrist_roll isn't driven (taped roughly straight on the real arm): the sim
-keeps it at WRIST_ROLL_FIXED, randomised by +-ROLL_RAND_DEG per episode.
+The gripper stays at GRIPPER_FIXED. wrist_roll isn't driven (taped on the real arm): the sim keeps it at
+WRIST_ROLL_FIXED, randomised by +-ROLL_RAND_DEG per episode. PickEnv (pick_task.py) builds on ReachEnv.
 
     python reach_task.py                    # watch random expert episodes
     python reach_task.py --headless -n 200  # expert success rate
@@ -21,18 +21,17 @@ import numpy as np
 import mujoco
 
 from real_env import (RealSetupEnv, Keyframe, IK, ARM_JOINTS, HOME_POS, HOME_SEED, PARK_PAN, MAT_TOP,
-                      BLOCK_HALF, top_down_rotation)
-from so101_ik import GRIPPER_OPEN
+                      BLOCK_HALF, AS_BUILT_WRIST_ROLL, AS_BUILT_GRIPPER_OPEN, top_down_rotation)
 from real_arm_client import load_joint_map
 
 REACH_PHASES = ["HOVER", "REACH", "REFINE"]
 MOVE_PHASES = REACH_PHASES[:2]         # the ones with their own target; REFINE corrects to the REACH target
 REACH_JOINTS = ARM_JOINTS[:4]          # shoulder_pan, shoulder_lift, elbow_flex, wrist_flex
-WRIST_ROLL_FIXED = 0.0                 # rad: middle of its calibrated range (set the real one there)
-ROLL_RAND_DEG = 10.0                   # the taped real wrist_roll is only roughly straight
+WRIST_ROLL_FIXED = AS_BUILT_WRIST_ROLL  # rad: where the real wrist_roll is taped
+ROLL_RAND_DEG = 10.0                   # ... only roughly
 REFINE_DEG = (1.5, 4.5)                # REFINE starts: per-joint offset from the REACH pose, std drawn from this
 REFINE_IN_VIEW = 0.8                   # ... and the block centre inside this fraction of the wrist camera's view
-GRIPPER_FIXED = GRIPPER_OPEN           # the jaw isn't driven; keep the sim jaw where the real one sits
+GRIPPER_FIXED = AS_BUILT_GRIPPER_OPEN  # reach doesn't use the jaw: keep it open
 INSTRUCTION = "Move the gripper just above the white block."
 
 BLOCK_TOP = MAT_TOP + 2 * BLOCK_HALF[2]
@@ -74,7 +73,7 @@ def build_reach_prompt(phase_idx, current_q4=None):
 class ReachEnv(RealSetupEnv):
     def __init__(self, randomize=True):
         self.roll = WRIST_ROLL_FIXED
-        super().__init__(randomize, as_built=True)       # the real arm: no moving jaw, zip-tied webcam
+        super().__init__(randomize, as_built=True)       # the real arm: taped wrist_roll, webcam on the wrist
         # Targets the wrist camera (site at the lens); wrist_roll in its private data = self.roll
         self.ik4 = IK(self.model, site="wrist_cam", joints=REACH_JOINTS)
         self.roll_qadr = self.model.jnt_qposadr[self.model.joint("wrist_roll").id]

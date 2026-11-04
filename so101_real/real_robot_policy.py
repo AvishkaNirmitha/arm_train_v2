@@ -1,9 +1,9 @@
 """Run the trained VLA on the REAL SO-101: real top + wrist cameras -> model -> joint angles -> real arm.
 
-Same loop as real_policy.py (8 phases, one model answer per phase, smooth joint moves in between), but the
-images come from real cameras and the moves go to arm_server.py. wrist_roll and the gripper are not mounted
-/ broken for now: the model still predicts them, they are printed and NOT sent (so the block can't actually
-be grasped yet - this run checks where the arm goes).
+Same loop as real_policy.py (one model answer per phase, smooth joint moves in between), but the images come
+from real cameras and the moves go to arm_server.py. wrist_roll is taped: never sent. The gripper is sent by
+the pick task (open / closed -> REAL_GRIPPER_OPEN / REAL_GRIPPER_CLOSED); reach and the old pickplace models
+leave it where it is.
 
 Safety: --no-arm runs cameras + model only; by default every move waits for ENTER; slow moves (15 deg/s);
 targets whose gripper point would be below the table are refused; the first move goes to a safe pose above
@@ -13,10 +13,14 @@ Run in .venv, with arm_server.py running in .venv-lerobot (not needed with --no-
 
     python so101_real/real_robot_policy.py --lora <ckpt> --no-arm   # look first (cameras 2 / 4)
     python so101_real/real_robot_policy.py --lora <ckpt>            # then move
+    python so101_real/real_robot_policy.py --lora <ckpt> --manual   # you pick each phase with one key press
+    python so101_real/real_robot_policy.py --lora <ckpt> --save     # + keep every step's images / answer (runs/)
 """
 import os
 import sys
+import json
 import argparse
+from datetime import datetime
 
 os.environ.setdefault("UNSLOTH_BLOCK_COMPILE", "0")  # see ../so101_vla/train.py; must precede `import unsloth`
 
@@ -31,6 +35,9 @@ from real_dataset import build_prompt                                           
 from real_policy import VLMPolicy, model_view                                     # noqa: E402
 from real_arm_client import ArmClient, load_joint_map, sim_to_real, real_to_sim, DISABLED  # noqa: E402
 from reach_task import ReachEnv, REACH_PHASES, MOVE_PHASES, build_reach_prompt, parse_reach_action  # noqa: E402
+from pick_task import PickEnv, PICK_PHASES, build_pick_prompt, parse_pick_action                     # noqa: E402
+from pick_task import gripper_word as pick_gripper_word                                              # noqa: E402
+from real_env import REAL_GRIPPER_OPEN, REAL_GRIPPER_CLOSED                                          # noqa: E402
 
 WINDOW = "real SO-101 VLA (what the model sees)"
 IMG_W, IMG_H = 448, 336
@@ -101,7 +108,7 @@ def close_windows():
 
 
 def checkpoint_task(lora_dir):
-    """'reach' or 'pickplace', from the meta.json of the dataset the checkpoint was trained on."""
+    """'reach', 'pick' or 'pickplace', from the meta.json of the dataset the checkpoint was trained on."""
     import json
     d = os.path.abspath(lora_dir)
     for _ in range(3):
@@ -113,25 +120,41 @@ def checkpoint_task(lora_dir):
             if os.path.exists(meta):
                 with open(meta) as f:
                     return json.load(f).get("task", "pickplace")
-            if dataset:   # dataset deleted since: reach datasets are named so101_reach_*
-                guess = "reach" if "reach" in os.path.basename(dataset) else "pickplace"
+            if dataset:   # dataset deleted since: named so101_reach_* / so101_pick_*
+                name = os.path.basename(dataset)
+                guess = "reach" if "reach" in name else "pick" if "_pick_" in name else "pickplace"
                 print(f"(dataset {os.path.basename(dataset)} is gone: task taken from its name -> {guess})")
                 return guess
         d = os.path.dirname(d)
-    raise SystemExit(f"can't tell which task {lora_dir} was trained for: pass --task reach / pickplace")
+    raise SystemExit(f"can't tell which task {lora_dir} was trained for: pass --task reach / pick / pickplace")
 
 
 def make_task(name, n_refine=0):
-    """env, phase names, prompt builder (step index, current sim joints) and answer -> (5 sim joints, note about
-    the unused motors). Reach: HOVER, REACH, then n_refine REFINE steps."""
+    """env, phase names in run order, prompt builder (phase name, current sim joints), answer -> (5 sim joints,
+    note, real gripper command or None) and extra real targets for the start poses. Reach: HOVER, REACH, then
+    n_refine REFINE steps; pick: n_refine REFINE steps after PRE_GRASP."""
+    if name == "pick":
+        env = PickEnv(randomize=False)
+        phases = ["PRE_GRASP"] + ["REFINE"] * n_refine + [p for p in PICK_PHASES if p not in ("PRE_GRASP", "REFINE")]
+
+        def parse(text):
+            r = parse_pick_action(text)
+            if r is None:
+                return None
+            q4, grip = r
+            word = pick_gripper_word(grip)
+            real = REAL_GRIPPER_OPEN if word == "open" else REAL_GRIPPER_CLOSED
+            return env.full_q(q4), f"gripper {word} -> {real}", real
+        return (env, phases, lambda phase, current: build_pick_prompt(PICK_PHASES.index(phase), current), parse,
+                {"gripper": REAL_GRIPPER_OPEN})
     if name == "reach":
         env = ReachEnv(randomize=False)
         phases = MOVE_PHASES + ["REFINE"] * n_refine
 
         def parse(text):
             q4 = parse_reach_action(text)
-            return None if q4 is None else (env.full_q(q4), "wrist_roll / gripper fixed (reach task)")
-        return env, phases, lambda k, current: build_reach_prompt(REACH_PHASES.index(phases[k]), current), parse
+            return None if q4 is None else (env.full_q(q4), "wrist_roll / gripper fixed (reach task)", None)
+        return env, phases, lambda phase, current: build_reach_prompt(REACH_PHASES.index(phase), current), parse, {}
     env = RealSetupEnv(randomize=False)
 
     def parse(text):
@@ -139,8 +162,8 @@ def make_task(name, n_refine=0):
         if r is None:
             return None
         q, grip = r
-        return q, f"ignored: wrist_roll {np.degrees(q[4]):.1f} deg, gripper {gripper_word(grip)}"
-    return env, PHASES, lambda k, current: build_prompt(k), parse
+        return q, f"ignored: wrist_roll {np.degrees(q[4]):.1f} deg, gripper {gripper_word(grip)}", None
+    return env, PHASES, lambda phase, current: build_prompt(PHASES.index(phase)), parse, {}
 
 
 def fmt(joints):
@@ -154,11 +177,45 @@ def ask(auto):
     return {"": "y"}.get(a, a)
 
 
-def go_to_start(arm, env, joint_map, args):
+def read_key():
+    """One key press from the terminal, without ENTER (Ctrl+C still works). Falls back to a line of input."""
+    if not sys.stdin.isatty():
+        return (input() or " ")[0]
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def choose_phase(menu, suggested):
+    """--manual: a phase name from menu, "done" or "quit", picked with one key."""
+    keys = "  ".join(f"{i + 1} {p}" for i, p in enumerate(menu))
+    print(f"\nnext step?  {keys}\n            SPACE = {suggested or '(nothing suggested)'}   d = episode done   "
+          f"q = quit : ", end="", flush=True)
+    while True:
+        c = read_key().lower()
+        if c.isdigit() and 1 <= int(c) <= len(menu):
+            choice = menu[int(c) - 1]
+        elif c in (" ", "\n") and suggested:
+            choice = suggested
+        elif c in ("d", "q"):
+            choice = {"d": "done", "q": "quit"}[c]
+        else:
+            continue
+        print(choice)
+        return choice
+
+
+def go_to_start(arm, env, joint_map, args, extra):
     """Up to the safe pose above the mat, then the parked pose training episodes start from (arm off to the
     side, so the top camera sees the whole mat). Lifting first keeps the arm from sweeping across the block."""
     for name, q in (("safe pose above the mat", env.q_seed), ("parked start pose (as in training)", env.q_home)):
-        target = sim_to_real(q, joint_map)
+        target = {**sim_to_real(q, joint_map), **extra}
         print(f"next: {name} -> {fmt(target)}")
         a = ask(args.auto)
         if a == "q":
@@ -171,51 +228,116 @@ def go_to_start(arm, env, joint_map, args):
     return True
 
 
-def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, args):
-    """One episode: per phase, fresh images -> model -> (ENTER) -> move. Returns (status, last gripper point)."""
+class StepLog:
+    """--save: the images the model saw and its answer at every step, and where the arm went, in
+    runs/<dd-mm-yyyy-hh-mm-ss>/: ep<e>_step<s>_<PHASE>_top.jpg / _wrist.jpg and steps.jsonl (one line per step)."""
+
+    def __init__(self, root):
+        self.dir = os.path.join(root, datetime.now().strftime("%d-%m-%Y-%H-%M-%S"))
+        os.makedirs(self.dir, exist_ok=True)
+        self.file = open(os.path.join(self.dir, "steps.jsonl"), "a")
+        print(f"saving every step to {self.dir}")
+
+    def images(self, ep, step, phase, frames):
+        names = []
+        for cam, f in zip(("top", "wrist"), frames):
+            name = f"ep{ep:02d}_step{step:02d}_{phase}_{cam}.jpg"
+            cv2.imwrite(os.path.join(self.dir, name), cv2.cvtColor(f, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 95])
+            names.append(name)
+        return names
+
+    def write(self, rec):
+        self.file.write(json.dumps(rec) + "\n")
+        self.file.flush()
+
+    def close(self):
+        self.file.close()
+
+
+def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, args, ep=0, log=None):
+    """One episode: per phase, fresh images -> model -> (ENTER) -> move. Returns (status, last gripper point).
+    The phases run in their fixed order, or with --manual in whatever order you pick (the fixed order is
+    suggested). log (StepLog): every step is saved."""
     n, last_tcp = len(phases), None
+    menu = list(dict.fromkeys(phases))   # each phase once, in run order
     # Current sim joints (REFINE prompts): read from the arm; with --no-arm assume the last target was reached
     current = env.q_home.copy() if arm is None else real_to_sim(arm.read()["joints"], joint_map, env.q_home)
-    for k, phase in enumerate(phases):
+    k, step = 0, 0                       # k: position in the fixed order
+    while True:
+        if args.manual:
+            phase = choose_phase(menu, phases[k] if k < n else None)
+            if phase in ("done", "quit"):
+                return phase, last_tcp
+            # suggest what follows this phase in the fixed order (after its last repeat, if it was suggested)
+            k = k + 1 if k < n and phase == phases[k] else max(i for i, p in enumerate(phases) if p == phase) + 1
+            label = f"Step {step + 1}: {phase}"
+        else:
+            if k >= n:
+                break
+            phase = phases[k]
+            label = f"Phase {k + 1}/{n}: {phase}"
+            k += 1
+        step += 1
         frames = model_view([grab(c) for c in caps])
-        show(frames, [(f"Phase {k + 1}/{n}: {phase}  - thinking ...", (0, 255, 255))])
-        text = policy([Image.fromarray(f) for f in frames], prompt_for(k, current), None)
-        parsed = parse(text)
-        print(f"\nPhase {k + 1}/{n} {phase}: model says {text!r}")
-        if parsed is None:
-            print("  unparseable answer -> stopping this episode")
-            return "error", last_tcp
-        q, note_unused = parsed
-        tcp = env.forward_tcp(q)
-        target = sim_to_real(q, joint_map)
-        print(f"  target (real deg): {fmt(target)}")
-        print(f"  {note_unused}")
-        print(f"  predicted gripper point (robot frame): x {tcp[0]:.3f}  y {tcp[1]:.3f}  z {tcp[2]:.3f} m")
-        show(frames, [(f"Phase {k + 1}/{n}: {phase}", (0, 255, 255)), (f"model: {text}", (255, 255, 255)),
-                      (f"real target: {fmt(target)}", (200, 200, 200)),
-                      (f"gripper point z = {tcp[2] * 100:.1f} cm above table", (0, 255, 0))])
-        if tcp[2] < MIN_TCP_Z:
-            print(f"  REFUSED: gripper point would be {tcp[2] * 100:.1f} cm above the table (< "
-                  f"{MIN_TCP_Z * 100:.1f} cm)")
-            continue
-        last_tcp = tcp
-        if arm is None:
-            current = q
-            continue
-        a = ask(args.auto)
-        if a == "q":
-            return "quit", last_tcp
-        if a != "y":
-            print("  skipped")
-            continue
-        r = arm.move(target, args.speed)
-        current = real_to_sim(r["joints"], joint_map, q)
-        note = f"  clamped to limits: {r['clamped']}" if r["clamped"] else ""
-        note += f"  LOCKED (recalibrate): {r['locked']}" if r.get("locked") else ""
-        print(f"  reached: {fmt(r['joints'])}  (max err {r['max_err_deg']:.1f} deg){note}")
-        if r.get("stopped"):
-            print("  stopped with Ctrl+C on the server -> ending the run")
-            return "stopped", last_tcp
+        show(frames, [(f"{label}  - thinking ...", (0, 255, 255))])
+        prompt = prompt_for(phase, current)
+        rec = {"episode": ep, "step": step, "phase": phase, "prompt": prompt,
+               "current_sim_deg": np.degrees(current[:4]).round(2).tolist(),
+               "images": log.images(ep, step, phase, frames) if log else None}
+        try:
+            text = policy([Image.fromarray(f) for f in frames], prompt, None)
+            rec["answer"] = text
+            parsed = parse(text)
+            print(f"\n{label}: model says {text!r}")
+            if parsed is None:
+                print("  unparseable answer -> stopping this episode")
+                rec["result"] = "unparseable"
+                return "error", last_tcp
+            q, note_unused, grip_real = parsed
+            tcp = env.forward_tcp(q)
+            target = sim_to_real(q, joint_map)
+            if grip_real is not None:
+                target["gripper"] = grip_real
+            rec.update({"target_real_deg": {m: round(v, 2) for m, v in target.items()},
+                        "predicted_tcp_m": tcp.round(4).tolist()})
+            print(f"  target (real deg): {fmt(target)}")
+            print(f"  {note_unused}")
+            print(f"  predicted gripper point (robot frame): x {tcp[0]:.3f}  y {tcp[1]:.3f}  z {tcp[2]:.3f} m")
+            show(frames, [(label, (0, 255, 255)), (f"model: {text}", (255, 255, 255)),
+                          (f"real target: {fmt(target)}", (200, 200, 200)),
+                          (f"gripper point z = {tcp[2] * 100:.1f} cm above table", (0, 255, 0))])
+            if tcp[2] < MIN_TCP_Z:
+                print(f"  REFUSED: gripper point would be {tcp[2] * 100:.1f} cm above the table (< "
+                      f"{MIN_TCP_Z * 100:.1f} cm)")
+                rec["result"] = "refused (too low)"
+                continue
+            last_tcp = tcp
+            if arm is None:
+                current = q
+                rec["result"] = "no arm"
+                continue
+            a = ask(args.auto)
+            if a == "q":
+                rec["result"] = "quit"
+                return "quit", last_tcp
+            if a != "y":
+                print("  skipped")
+                rec["result"] = "skipped"
+                continue
+            r = arm.move(target, args.speed)
+            current = real_to_sim(r["joints"], joint_map, q)
+            rec.update({"result": "stopped" if r.get("stopped") else "moved",
+                        "reached_real_deg": {m: round(v, 2) for m, v in r["joints"].items()},
+                        "max_err_deg": round(r["max_err_deg"], 2), "clamped": r["clamped"]})
+            note = f"  clamped to limits: {r['clamped']}" if r["clamped"] else ""
+            note += f"  LOCKED (recalibrate): {r['locked']}" if r.get("locked") else ""
+            print(f"  reached: {fmt(r['joints'])}  (max err {r['max_err_deg']:.1f} deg){note}")
+            if r.get("stopped"):
+                print("  stopped with Ctrl+C on the server -> ending the run")
+                return "stopped", last_tcp
+        finally:
+            if log:
+                log.write(rec)
     return "done", last_tcp
 
 
@@ -227,23 +349,28 @@ def main():
     ap.add_argument("--no-arm", action="store_true", help="cameras + model only, nothing moves")
     ap.add_argument("--speed", type=float, default=15.0, help="joint speed, deg/s (server caps at 60)")
     ap.add_argument("--auto", action="store_true", help="don't wait for ENTER before each move")
+    ap.add_argument("--save", action="store_true",
+                    help="save the model's images + answer at every step to so101_real/runs/<date-time>/")
+    ap.add_argument("--manual", action="store_true",
+                    help="pick each phase yourself with one key (1..8, SPACE = the usual next one, d = done)")
     ap.add_argument("--episodes", type=int, default=1,
                     help="episodes in one run (model stays loaded); you move the block in between")
     ap.add_argument("--load-in-4bit", action="store_true")
     ap.add_argument("--refine", type=int, default=2,
-                    help="reach: REFINE steps after REACH (only for models trained with REFINE, e.g. reach v3)")
-    ap.add_argument("--task", choices=["reach", "pickplace"], default=None,
+                    help="REFINE steps (reach: after REACH, pick: after PRE_GRASP; only for models trained with them)")
+    ap.add_argument("--task", choices=["reach", "pick", "pickplace"], default=None,
                     help="default: the task the checkpoint was trained for (from its dataset's meta.json)")
     args = ap.parse_args()
 
     task = args.task or checkpoint_task(args.lora)
     print(f"task: {task}")
     joint_map = load_joint_map()
-    env, phases, prompt_for, parse = make_task(task, args.refine)   # env: kinematics only (safety check of predicted poses)
+    env, phases, prompt_for, parse, start_extra = make_task(task, args.refine)   # env: kinematics only (safety checks)
     caps = [open_camera(args.top_cam, *TOP_RES), open_camera(args.wrist_cam)]
     policy = VLMPolicy(args.lora, args.load_in_4bit)
     arm = None if args.no_arm else ArmClient()
-    print(f"not driven on the real arm: {sorted(DISABLED)} (predicted, printed, not sent)")
+    log = StepLog(os.path.join(HERE, "runs")) if args.save else None
+    print(f"not driven on the real arm: {sorted(DISABLED)}" + ("" if task == "pick" else ", gripper (not used by this task)"))
 
     results = []
     try:
@@ -251,16 +378,20 @@ def main():
             print("start pose:", fmt(arm.read()["joints"]))
         for ep in range(args.episodes):
             print(f"\n========== episode {ep + 1}/{args.episodes} ==========")
-            if arm is not None and not go_to_start(arm, env, joint_map, args):
+            if arm is not None and not go_to_start(arm, env, joint_map, args, start_extra):
                 break
             if ep > 0 or args.episodes > 1:
-                a = input("Place the block (18-32 cm from the base), then ENTER = run   q = quit : ").strip().lower()
+                hint = ", square to the arm" if task == "pick" else ""
+                a = input(f"Place the block (18-32 cm from the base{hint}), then ENTER = run   q = quit : ").strip().lower()
                 if a == "q":
                     break
-            status, last_tcp = run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, args)
+            status, last_tcp = run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, args,
+                                           ep + 1, log)
             ok = None
             if status == "done" and args.episodes > 1:
-                a = input("Did it end where it should (gripper just above the block)? [y/n/ENTER = skip] ")
+                q_ok = ("Did it pick the block up and put it back?" if task == "pick" else
+                        "Did it end where it should (gripper just above the block)?")
+                a = input(f"{q_ok} [y/n/ENTER = skip] ")
                 ok = {"y": True, "n": False}.get(a.strip().lower())
             results.append((status, ok, last_tcp))
             if status in ("quit", "stopped"):
@@ -282,6 +413,9 @@ def main():
         for c in caps:
             c.release()
         close_windows()
+        if log:
+            log.close()
+            print(f"steps saved in {log.dir}")
 
 
 if __name__ == "__main__":

@@ -4,8 +4,8 @@ Run in .venv-lerobot, from the project root, with the arm resting:
 
     python so101_real/arm_server.py
 
-Only the ATTACHED motors of so101_arm.py are driven (wrist_roll and the gripper are not mounted / broken;
-commands for them are ignored). Safety:
+Only the ATTACHED motors of so101_arm.py are driven (wrist_roll is taped, not driven; commands for it are
+ignored). The gripper is in lerobot's 0..100 units (0 / 100 = the ends of its calibrated range). Safety:
   * on start every servo's goal is set to where it already is before torque comes on (no jump)
   * targets are clamped to the calibrated range minus a margin; speed is capped
   * Ctrl+C during a move stops it on the spot; Ctrl+C again (or a client "shutdown") returns slowly to
@@ -29,6 +29,7 @@ TICKS_PER_REV = 4096
 # (lift: sim -100..100 + 99.6; elbow: sim -96.8..96.8 - 91.9), trimmed; the folded rest pose reads 0 / 0.
 MANUAL_LIMITS_DEG = {"shoulder_lift": (-2.0, 195.0), "elbow_flex": (-185.0, 2.0)}
 FULL_TURN_TICKS = 4000
+GRIPPER_LIMITS = (2.0, 98.0)   # 0..100 units; a little inside the calibrated ends
 
 
 class ArmServer:
@@ -44,6 +45,9 @@ class ArmServer:
         # In degrees mode 0 = middle of the calibrated range: limits are +-half the range
         self.limits, self.locked = {}, set()
         for m, c in self.arm.calibration.items():
+            if m == "gripper":
+                self.limits[m] = GRIPPER_LIMITS
+                continue
             if c.range_max - c.range_min >= FULL_TURN_TICKS and m in MANUAL_LIMITS_DEG:
                 self.limits[m] = MANUAL_LIMITS_DEG[m]
                 print(f"{m}: calibrated range is a full turn - using the hand-set limits {MANUAL_LIMITS_DEG[m]}")
@@ -144,7 +148,7 @@ def main():
     ap.add_argument("--id", default=ROBOT_ID)
     args = ap.parse_args()
 
-    print(f"driving {ATTACHED} (wrist_roll / gripper are ignored)")
+    print(f"driving {ATTACHED} (wrist_roll is ignored)")
     server = ArmServer(args.port, args.id)
     listener = Listener(ADDRESS, authkey=AUTHKEY)
     print(f"listening on {ADDRESS[0]}:{ADDRESS[1]}  (Ctrl+C: stop; Ctrl+C when idle: return to start and quit)")

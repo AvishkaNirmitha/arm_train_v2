@@ -15,7 +15,7 @@ from arm_protocol import ADDRESS, AUTHKEY
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAP_FILE = os.path.join(HERE, "real_joint_map.json")
 SIM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
-DISABLED = {"wrist_roll", "gripper"}   # not mounted / broken on the real arm for now: never commanded
+DISABLED = {"wrist_roll"}   # taped on the real arm: never commanded (the gripper is sent by the pick task itself)
 
 
 def load_joint_map():
