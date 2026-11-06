@@ -37,6 +37,23 @@ from real_arm_client import ArmClient, load_joint_map, sim_to_real, real_to_sim,
 from reach_task import ReachEnv, REACH_PHASES, MOVE_PHASES, build_reach_prompt, parse_reach_action  # noqa: E402
 from pick_task import PickEnv, PICK_PHASES, build_pick_prompt, parse_pick_action                     # noqa: E402
 from pick_task import gripper_word as pick_gripper_word                                              # noqa: E402
+from pick_task import format_pick_action, GRIPPER as PICK_GRIPPER, PLACE_DZ                          # noqa: E402
+from real_env import GRASP_Z, HOVER_Z, LIFT_DZ                                                       # noqa: E402
+
+# --top-only (pick): after PRE_GRASP every move is computed, straight down / up from the PRE_GRASP point, the same
+# heights as the sim expert (pick_task.plan_keyframes). The model (and the wrist camera) is only used for PRE_GRASP.
+TOP_ONLY_MOVES = {"GRASP": (GRASP_Z, "open"), "CLOSE": (GRASP_Z, "closed"), "LIFT": (GRASP_Z + LIFT_DZ, "closed"),
+                  "PLACE": (GRASP_Z + PLACE_DZ, "closed"), "RELEASE": (GRASP_Z + PLACE_DZ, "open"),
+                  "RETREAT": (HOVER_Z, "open")}
+
+
+def top_only_answer(env, phase, anchor_xy, current):
+    """The answer the sim expert would give for this phase with the block under anchor_xy, in the model's format."""
+    z, grip = TOP_ONLY_MOVES[phase]
+    q4, err, _ = env._solve(np.array([*anchor_xy, z]), current[:4])
+    if err > 3e-3:
+        return None
+    return format_pick_action(q4, PICK_GRIPPER[grip])
 from real_env import REAL_GRIPPER_OPEN, REAL_GRIPPER_CLOSED                                          # noqa: E402
 
 WINDOW = "real SO-101 VLA (what the model sees)"
@@ -258,7 +275,7 @@ def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, ar
     """One episode: per phase, fresh images -> model -> (ENTER) -> move. Returns (status, last gripper point).
     The phases run in their fixed order, or with --manual in whatever order you pick (the fixed order is
     suggested). log (StepLog): every step is saved."""
-    n, last_tcp = len(phases), None
+    n, last_tcp, anchor_xy = len(phases), None, None
     menu = list(dict.fromkeys(phases))   # each phase once, in run order
     # Current sim joints (REFINE prompts): read from the arm; with --no-arm assume the last target was reached
     current = env.q_home.copy() if arm is None else real_to_sim(arm.read()["joints"], joint_map, env.q_home)
@@ -285,7 +302,20 @@ def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, ar
                "current_sim_deg": np.degrees(current[:4]).round(2).tolist(),
                "images": log.images(ep, step, phase, frames) if log else None}
         try:
-            text = policy([Image.fromarray(f) for f in frames], prompt, None)
+            if args.top_only and phase in TOP_ONLY_MOVES:
+                if anchor_xy is None:
+                    print(f"\n{label}: --top-only needs PRE_GRASP first -> stopping this episode")
+                    rec["result"] = "no PRE_GRASP yet"
+                    return "error", last_tcp
+                text = top_only_answer(env, phase, anchor_xy, current)
+                if text is None:
+                    print(f"\n{label}: --top-only: no IK solution below the PRE_GRASP point -> stopping")
+                    rec["result"] = "ik fail"
+                    return "error", last_tcp
+                rec["computed"] = True
+                label += " (computed below PRE_GRASP, no model)"
+            else:
+                text = policy([Image.fromarray(f) for f in frames], prompt, None)
             rec["answer"] = text
             parsed = parse(text)
             print(f"\n{label}: model says {text!r}")
@@ -312,6 +342,8 @@ def run_episode(env, phases, prompt_for, parse, policy, caps, arm, joint_map, ar
                 rec["result"] = "refused (too low)"
                 continue
             last_tcp = tcp
+            if phase in ("PRE_GRASP", "REFINE"):
+                anchor_xy = tcp[:2].copy()       # --top-only: the moves after this go straight down from here
             if arm is None:
                 current = q
                 rec["result"] = "no arm"
@@ -360,10 +392,15 @@ def main():
                     help="REFINE steps (reach: after REACH, pick: after PRE_GRASP; only for models trained with them)")
     ap.add_argument("--task", choices=["reach", "pick", "pickplace"], default=None,
                     help="default: the task the checkpoint was trained for (from its dataset's meta.json)")
+    ap.add_argument("--top-only", action="store_true",
+                    help="pick: the model only gives PRE_GRASP (top camera); GRASP..RETREAT are computed straight "
+                         "down / up from that point (the wrist camera is not used)")
     args = ap.parse_args()
 
     task = args.task or checkpoint_task(args.lora)
     print(f"task: {task}")
+    if args.top_only and task != "pick":
+        raise SystemExit("--top-only is for the pick task")
     joint_map = load_joint_map()
     env, phases, prompt_for, parse, start_extra = make_task(task, args.refine)   # env: kinematics only (safety checks)
     caps = [open_camera(args.top_cam, *TOP_RES), open_camera(args.wrist_cam)]

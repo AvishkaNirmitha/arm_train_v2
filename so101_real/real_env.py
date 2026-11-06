@@ -120,13 +120,15 @@ WEBCAM_RGBA = (0.22, 0.23, 0.27, 1.0)
 WEBCAM_RAND_POS = 0.01      # m, per axis
 WEBCAM_RAND_DEG = 8.0       # max rotation
 WEBCAM_RAND_FOVY = 4.0      # deg
+# Measured by fit_wrist_calib.py (wrist_camera_calib.json) when there is one, else the first estimates:
+_WRIST_FIT = json.load(open(WRIST_CAM_CALIB)) if os.path.exists(WRIST_CAM_CALIB) else {}
 # The taped wrist_roll: jaws open sideways, moving finger on the robot's right (arm pointing ahead)
-AS_BUILT_WRIST_ROLL = np.radians(-90.0)
+AS_BUILT_WRIST_ROLL = np.radians(_WRIST_FIT.get("wrist_roll_deg", -90.0))
 # Real gripper (lerobot 0..100): 5.3 = fingers touching, 93.8 = open as far as the moving finger stays in the
-# wrist view (calibrated range = 38.2 deg per 100). Sim jaw angle of the same poses, from the same fit:
-AS_BUILT_GRIPPER_OPEN = np.radians(28.1)
-AS_BUILT_GRIPPER_TOUCH = np.radians(-5.7)
+# wrist view (calibrated range = 38.2 deg per 100, so 33.8 deg apart). Sim jaw angle of the open pose:
 REAL_GRIPPER_OPEN, REAL_GRIPPER_TOUCH = 93.8, 5.3
+AS_BUILT_GRIPPER_OPEN = np.radians(_WRIST_FIT.get("gripper_open_deg", 28.1))
+AS_BUILT_GRIPPER_TOUCH = AS_BUILT_GRIPPER_OPEN - np.radians((REAL_GRIPPER_OPEN - REAL_GRIPPER_TOUCH) * 38.2 / 100)
 REAL_GRIPPER_CLOSED = 2.0   # command when grasping: past touching, the servo squeezes (torque-limited)
 
 TOP_CAM_POS = np.array([0.19, 0.0, 0.50])
@@ -411,16 +413,16 @@ class RealSetupEnv:
         m.light_diffuse[:] = nom["light_diffuse"] * rng.uniform(0.7, 1.3)
         m.light_pos[:] = nom["light_pos"] + rng.uniform(-0.15, 0.15, nom["light_pos"].shape) * [1, 1, 0]
         m.vis.headlight.ambient[:] = nom["headlight_ambient"] * rng.uniform(0.7, 1.5)
-        # The real top camera won't be mounted perfectly: ~1 cm / ~1.5 deg / ~1 deg FOV
+        # The real top camera won't stay perfectly put (it has been bumped): ~2 cm / ~3 deg / ~2 deg FOV
         c = self.top_cam
-        m.cam_pos[c] = nom["cam_pos"][c] + rng.uniform(-0.01, 0.01, 3)
+        m.cam_pos[c] = nom["cam_pos"][c] + rng.uniform(-0.02, 0.02, 3)
         dq = np.zeros(4)
         axis = rng.normal(size=3)
-        mujoco.mju_axisAngle2Quat(dq, axis / np.linalg.norm(axis), np.radians(rng.uniform(0, 1.5)))
+        mujoco.mju_axisAngle2Quat(dq, axis / np.linalg.norm(axis), np.radians(rng.uniform(0, 3.0)))
         q = np.zeros(4)
         mujoco.mju_mulQuat(q, nom["cam_quat"][c], dq)
         m.cam_quat[c] = q
-        m.cam_fovy[c] = nom["cam_fovy"][c] + rng.uniform(-1, 1)
+        m.cam_fovy[c] = nom["cam_fovy"][c] + rng.uniform(-2, 2)
         if self.as_built:
             # The webcam mount isn't perfectly rigid (WEBCAM_RAND_*); the wrist_cam site (reach IK target)
             # moves with it, so the reach expert always centres the block under the camera rendered

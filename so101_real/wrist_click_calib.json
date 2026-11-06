@@ -1,0 +1,21 @@
+{
+  "pos": [
+    0.0003,
+    0.03908,
+    -0.01061
+  ],
+  "quat": [
+    0.919387,
+    -0.300532,
+    -0.253728,
+    0.005527
+  ],
+  "fovy": 56.09,
+  "wrist_roll_deg": -94.31,
+  "rms_px": 3.24,
+  "ray_mm": 0.56,
+  "cv_ray_mm": NaN,
+  "n_points": 11,
+  "data": "/home/asus/Desktop/works/60_pick_place_advanced/so101_real/captures/wrist_calib_05-11-2026-11-24-04",
+  "created": "2026-11-06T10:56:10"
+}
