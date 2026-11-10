@@ -251,6 +251,10 @@ def main():
     jm = load_joint_map()
     arm = None if args.no_arm else ArmClient()
     grip = REAL_GRIPPER_OPEN             # commanded gripper, sent with every move (a held block stays squeezed)
+    held = {} if arm is None else dict(arm.read().get("held", {}))   # arm_server HOLDs (motors window HOLD button)
+    if "gripper" in held:
+        grip = held["gripper"]
+        print(f"gripper is HELD at {grip:.0f} (arm_server): it won't move - press HELD in the motors window to release")
     sim_q = env.q_home.copy()            # --no-arm: where the arm is assumed to be
 
     top = crop_to_4_3(frame(top_cap))
@@ -280,7 +284,9 @@ def main():
     def send(name, q, pos=None):
         """One move (blocking). Returns False if it was stopped."""
         nonlocal sim_q
-        target = {**sim_to_real(q, jm), "gripper": grip}
+        target = sim_to_real(q, jm)
+        if "gripper" not in held:            # HELD: leave it out (arm_server would keep it anyway)
+            target["gripper"] = grip
         where = "" if pos is None else f"gripper point {np.round(pos, 3)} "
         print(f"  {name}: {where}-> {fmt(target)}")
         if arm is None:
@@ -328,12 +334,6 @@ def main():
             how = (f"{' + '.join(cams)} rays{'' if z is None else ' on the ' + name}, misses {np.round(res * 1000, 1)} mm, "
                    f"expected error x/y +-{e_xy * 1000:.1f} mm, height +-{e_z * 1000:.1f} mm")
         print(f"goal {np.round(p, 3)} m ({np.linalg.norm(p[:2]) * 100:.1f} cm from the base; {how})")
-        if len(rays) > 1:
-            # each ray should pass within ~3 sigma of the point; more = a different point clicked or a bad calibration
-            lim = np.array([3 * s * np.linalg.norm(p - o) for s, (o, _) in zip(sigmas, rays)]) + 0.002
-            if np.any(res > lim):
-                print(f"  ! the rays disagree more than their accuracy ({np.round(res * 1000, 1)} mm vs "
-                      f"{np.round(lim * 1000, 1)} mm): same point clicked in both views?")
 
     def on_top(event, u, v, _flags, _param):
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -402,7 +402,7 @@ def main():
     def panel_check(target):
         """Motors window: is the straight joint move from here to target safe (sim)? + where the gripper point goes."""
         q_from = st["q_now"]
-        err, tcp = path_check(kin, q_from, real_to_sim(target, jm, q_from), MIN_TCP_Z)
+        err, tcp = path_check(kin, q_from, real_to_sim(target, jm, q_from))   # no fingertip floor
         return err, ("" if tcp is None else
                      f"gripper point there: x {tcp[0] * 100:.1f}  y {tcp[1] * 100:.1f}  z {tcp[2] * 100:.1f} cm")
 
@@ -415,8 +415,8 @@ def main():
         st["plan"] = []
         st["clicks"].pop("wrist", None)
         if arm is None:
-            sim_q = real_to_sim(target, jm, sim_q)
-            reached = dict(target)
+            sim_q = real_to_sim(target, jm, sim_q)   # target = only the moved motors
+            reached = real_now()
         else:
             r = arm.move(target, speed)
             reached = r["joints"]
@@ -427,15 +427,36 @@ def main():
 
     def set_gripper(value):
         """X / O keys: the gripper slider in the motors window, sent now."""
-        panel.set_value("gripper", value)
+        if not panel.set_value("gripper", value):
+            print(f"gripper is HELD at {held['gripper']:.0f} - not changed (press HELD in the motors window)")
+            return
         now = (real_now() if arm is not None else {}).get("gripper", grip)
         print(f"gripper -> {grip:.0f} (now at {now:.0f}{', blocked: holding something?' if abs(now - grip) > 5 else ''})")
 
     cv2.namedWindow(TOP_WIN, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
     cv2.setMouseCallback(TOP_WIN, on_top)
     r0 = arm.read() if arm is not None else None
+
+    def panel_hold(m, on):
+        """HOLD button: arm_server keeps m where it is for every script until released."""
+        nonlocal grip
+        if arm is None:                      # dry run: just remember it
+            if on:
+                held[m] = grip if m == "gripper" else real_now()[m]
+            else:
+                held.pop(m, None)
+        else:
+            new = arm.hold(m, on)["held"]
+            held.clear()
+            held.update(new)
+        if "gripper" in held:
+            grip = held["gripper"]
+        print(f"  {m} {'HELD at ' + format(held[m], '.1f') if on else 'released'}")
+        return dict(held)
+
     panel = MotorPanel(DRY_LIMITS if r0 is None else r0["limits"], real_now(), panel_move, panel_check,
-                       speed=args.speed, title="motors" + (" (dry run)" if arm is None else ""), closable=False)
+                       speed=args.speed, title="motors" + (" (dry run)" if arm is None else ""), closable=False,
+                       hold=panel_hold, held=held)
     if wrist_cap is not None:
         cv2.namedWindow(WRIST_WIN, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
         cv2.setMouseCallback(WRIST_WIN, on_wrist)

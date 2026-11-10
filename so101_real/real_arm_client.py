@@ -71,6 +71,10 @@ class ArmClient:
     def free(self, free=True):
         return self._call(cmd="free", free=free)
 
+    def hold(self, motor, on=True, value=None):
+        """HOLD a motor on the server: no move (from any script) changes it until hold(motor, False)."""
+        return self._call(cmd="hold", motor=motor, on=on, value=value)
+
     def home(self, speed_deg_s=15.0):
         return self._call(cmd="home", speed=speed_deg_s)
 

@@ -59,6 +59,8 @@ class ArmServer:
                 self.locked.add(m)
                 print(f"WARNING: {m} calibrated range is only {2 * (half + LIMIT_MARGIN_DEG):.1f} deg - it stays "
                       f"LOCKED where it is. Recalibrate it (sweep it through its whole range) to use it.")
+        self.free = False
+        self.held = {}                           # {motor: value} HELD: no client can change it until released
         self.start_pose = self.read()
         print("connected, holding the start pose:", self.fmt(self.start_pose))
         print("limits (deg):", {m: tuple(round(v, 1) for v in lim) for m, lim in self.limits.items()})
@@ -75,13 +77,30 @@ class ArmServer:
         return {m: int(v) for m, v in
                 self.arm.bus.sync_read("Present_Position", normalize=False, num_retry=2).items()}
 
+    def read_goal(self):
+        """What each motor was last told (Goal_Position). A loaded joint sits a little off it (sag), so moves start
+        from here, not from Present_Position: then a motor that isn't moved gets exactly the same command again."""
+        if self.free:
+            return self.read()
+        try:
+            return {m: float(v) for m, v in self.arm.bus.sync_read("Goal_Position", num_retry=2).items()}
+        except Exception as ex:                  # fall back to the old behaviour
+            print("WARNING: can't read Goal_Position, starting from Present_Position:", ex)
+            return self.read()
+
     def move(self, target, speed):
-        """Smooth (smoothstep) joint interpolation to target {motor: deg}. Unknown / unmounted motors are ignored."""
+        """Smooth (smoothstep) joint interpolation to target {motor: deg}. Unknown / unmounted motors are ignored.
+        Motors not in target keep their current goal (they get no new command). HELD motors keep their held value
+        whatever the target says (reported in "held_refused")."""
         ignored = sorted(set(target) - set(self.motors))
-        start = self.read()
+        held_refused = sorted(m for m in target if m in self.held and abs(float(target[m]) - self.held[m]) > 0.05)
+        if held_refused:
+            print(f"HELD, not changed: {', '.join(held_refused)} (release it with the HOLD button / hold off)")
+        start = self.read_goal()
+        start.update(self.held)
         goal, clamped = {}, []
         for m in self.motors:
-            if m in self.locked:
+            if m in self.locked or m in self.held:
                 goal[m] = start[m]
                 continue
             v = float(target.get(m, start[m]))
@@ -101,22 +120,42 @@ class ArmServer:
                 time.sleep(1 / CONTROL_HZ)
             time.sleep(0.3)  # settle
         except KeyboardInterrupt:
-            here = self.read()
+            here = {**self.read(), **self.held}   # a held motor keeps its value (e.g. still squeezing a block)
             self.arm.send_action({f"{m}.pos": v for m, v in here.items()})
             stopped = True
             print("\nSTOPPED by Ctrl+C, holding here:", self.fmt(here))
         final = self.read()
         return {"ok": not stopped, "stopped": stopped, "joints": final, "goal": goal, "clamped": clamped,
-                "ignored": ignored, "locked": sorted(self.locked), "max_err_deg": max(abs(final[m] - goal[m]) for m in self.motors)}
+                "ignored": ignored, "locked": sorted(self.locked), "held": dict(self.held), "held_refused": held_refused,
+                "max_err_deg": max(abs(final[m] - goal[m]) for m in self.motors)}
+
+    def hold(self, motor, on, value=None):
+        """on: keep motor at value (default: what it is told now) - every move (any client) leaves it there."""
+        if motor not in self.motors:
+            return {"ok": False, "error": f"unknown motor {motor!r}"}
+        if on:
+            if value is not None:
+                v = float(value)
+            else:
+                v = self.held[motor] if motor in self.held else self.read_goal()[motor]
+            lo, hi = self.limits[motor]
+            self.held[motor] = float(np.clip(v, lo, hi))
+            print(f"HOLD {motor} at {self.held[motor]:.1f} - no move can change it until it is released")
+        elif self.held.pop(motor, None) is not None:
+            print(f"released {motor}")
+        return {"ok": True, "held": dict(self.held), "joints": self.read()}
 
     def set_free(self, free):
         """free=True: torque off so the arm can be moved by hand (hold it - it will sag!)."""
+        loose = [m for m in self.motors if m not in self.held]    # a HELD motor keeps its torque and goal
         if free:
-            self.arm.bus.disable_torque()
+            self.arm.bus.disable_torque(loose)
         else:
             bus = self.arm.bus
-            bus.sync_write("Goal_Position", bus.sync_read("Present_Position"))
-            bus.enable_torque()
+            present = bus.sync_read("Present_Position")
+            bus.sync_write("Goal_Position", {m: present[m] for m in loose})
+            bus.enable_torque(loose)
+        self.free = free
         return {"ok": True, "free": free, "joints": self.read()}
 
     def shutdown(self):
@@ -132,11 +171,14 @@ class ArmServer:
 def handle(server, msg):
     cmd = msg.get("cmd")
     if cmd == "read":
-        return {"ok": True, "joints": server.read(), "raw": server.read_raw(), "limits": server.limits}
+        return {"ok": True, "joints": server.read(), "raw": server.read_raw(), "limits": server.limits,
+                "held": dict(server.held)}
     if cmd == "move":
         return server.move(msg["target"], msg.get("speed", 20.0))
     if cmd == "free":
         return server.set_free(bool(msg.get("free", True)))
+    if cmd == "hold":
+        return server.hold(msg["motor"], bool(msg.get("on", True)), msg.get("value"))
     if cmd == "home":
         return server.move(server.start_pose, msg.get("speed", 15.0))
     return {"ok": False, "error": f"unknown command {cmd!r}"}
