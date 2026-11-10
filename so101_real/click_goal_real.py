@@ -21,6 +21,7 @@ Needs: arm_server.py running (.venv-lerobot), unless --no-arm. Run in .venv:
     python so101_real/click_goal_real.py                # move to the hover point only
     python so101_real/click_goal_real.py --allow-down   # + D = down to the goal, X / O = close / open the gripper
     python so101_real/click_goal_real.py --no-base --allow-down   # without the base camera (on when BASE_CAM is in .env)
+    python so101_real/click_goal_real.py --allow-down --record pick_red   # + record episodes (R start / end, B discard)
 Camera indexes come from .env (TOP_CAM / WRIST_CAM / BASE_CAM, see cam_config.py); --top-cam etc. override them.
 
 The "motors" window (motor_panel.py) has one slider per motor (wrist_roll excluded): drag + let go, wheel, -/+ or
@@ -31,14 +32,19 @@ Keys (in a camera window):
     SPACE/ENTER plan: hover above the goal             D      plan: down to the goal (--allow-down)
     ENTER       do the planned move                    X / O  gripper close / open (or the motors window)
     C           clear clicks and plan                  H      plan: back to the parked pose
+    R           (--record) start / end + save an episode   B  (--record) throw the running episode away
     Q / Esc     quit
 Every move waits for ENTER; Ctrl+C in the arm_server terminal stops a move on the spot.
+
+--record NAME: episodes go to recordings/<dd_mm_yyyy>_NAME/episode_NNN/ - the three camera windows as shown (MP4),
+the joints + commands per frame, and every click / plan / move / gripper / motors-window input (recorder.py).
 """
 import os
 import sys
 import json
 import time
 import argparse
+import threading
 
 import cv2
 import numpy as np
@@ -50,13 +56,14 @@ from real_env import (TOP_CAM_CALIB, ARM_JOINTS, MAT_TOP, MAT_HALF, BLOCK_HALF, 
                       REAL_GRIPPER_OPEN, REAL_GRIPPER_CLOSED, MOUNT_SCENE_POS, scene_to_robot_rot, _DIMS)
 from pick_task import PickEnv, MAX_GRASP_TILT_DEG                                            # noqa: E402
 from reach_task import REACH_RADIUS                                                           # noqa: E402
-from real_arm_client import ArmClient, load_joint_map, sim_to_real, real_to_sim               # noqa: E402
+from real_arm_client import ArmClient, load_joint_map, sim_to_real, real_to_sim, MAP_FILE     # noqa: E402
 from real_robot_policy import open_camera, crop_to_4_3, fmt, MIN_TCP_Z                       # noqa: E402
 from cam_config import TOP_CAM, WRIST_CAM, BASE_CAM, TOP_RES, WRIST_RES, BASE_RES       # noqa: E402  (.env)
 from capture_wrist_calib import frame, check_top_alignment                                    # noqa: E402
 import align_top_camera as align                                                              # noqa: E402
 from motor_panel import MotorPanel, path_check, DRY_LIMITS                                    # noqa: E402
-from base_camera import BaseCam, fixed_tip                                                    # noqa: E402
+from base_camera import BaseCam, fixed_tip, BASE_CLICK_CALIB                                  # noqa: E402
+from recorder import Grabber, Recorder                                                        # noqa: E402
 
 BLOCK_TOP = MAT_TOP + 2 * BLOCK_HALF[2]
 SURFACES = [("block top", BLOCK_TOP), ("mat", MAT_TOP), ("any height", None)]   # what was clicked (P)
@@ -234,6 +241,9 @@ def main():
     ap.add_argument("--no-arm", action="store_true", help="dry run: no arm_server, nothing moves")
     ap.add_argument("--allow-down", action="store_true", help="allow D (down to the goal) and the gripper keys")
     ap.add_argument("--speed", type=float, default=15.0, help="joint speed, deg/s")
+    ap.add_argument("--record", nargs="?", const="click", default=None, metavar="NAME",
+                    help="record episodes (R = start / end, B = discard) to recordings/<dd_mm_yyyy>_NAME/")
+    ap.add_argument("--rec-fps", type=float, default=10.0, help="recording frame rate (default 10)")
     args = ap.parse_args()
 
     with open(TOP_CAM_CALIB) as f:
@@ -312,6 +322,56 @@ def main():
     def current_q():
         return real_to_sim(real_now(), jm, env.q_home)              # wrist_roll (not driven) from q_home
 
+    cmd = real_now()                     # what each motor was last told (real units) - the "action" of a recording
+    rec = None                           # Recorder (--record), made once the windows are up
+    kin_rec = Kin(env)                   # its own MjData: the move-time recorder thread draws with it
+
+    def log(kind, **data):
+        """One line in the running episode's events.jsonl (nothing if not recording)."""
+        if rec is not None:
+            rec.event(kind, **data)
+
+    def record_during_move(target, speed, stop_evt):
+        """Thread: while arm.move() blocks, keep recording - newest camera frames, the arm drawn where it should be
+        by now (the same smoothstep as arm_server); the real trace replaces state / action afterwards."""
+        start = dict(cmd)
+        goal = {**start, **{m: float(v) for m, v in target.items() if m in start and m not in held}}
+        dur = max(max((abs(goal[m] - start[m]) for m in goal), default=0.0) / min(max(float(speed), 1.0), 60.0), 0.3)
+        t0 = time.time()
+        while not stop_evt.is_set():
+            a = min((time.time() - t0) / dur, 1.0)
+            a = a * a * (3 - 2 * a)
+            est = {m: start[m] + a * (goal[m] - start[m]) for m in goal}
+            try:
+                rec.add(render(real_to_sim(est, jm, env.q_home), kin_rec, moving=True), state=est, action=est,
+                        moving=True)
+            except Exception as ex:          # never let the recorder break a move
+                print(f"  (recording during the move: {ex!r})")
+                return
+            stop_evt.wait(0.5 / rec.fps)
+
+    def do_move(target, speed, label):
+        """arm.move (blocking) + recording: frames go on during the move, then the joint trace and the result."""
+        recording = rec is not None and rec.active
+        if recording:
+            log("move_start", label=label, target=target, speed=speed)
+            stop_evt = threading.Event()
+            th = threading.Thread(target=record_during_move, args=(target, speed, stop_evt), daemon=True)
+            th.start()
+        try:
+            r = arm.move(target, speed, trace=True) if recording else arm.move(target, speed)
+        finally:
+            if recording:
+                stop_evt.set()
+                th.join(timeout=2.0)
+        cmd.update(r.get("goal", {}))
+        if recording:
+            rec.fill_trace(r.get("trace"))
+            log("move_done", label=label, ok=r.get("ok"), stopped=r.get("stopped"), joints=r.get("joints"),
+                goal=r.get("goal"), clamped=r.get("clamped"), held_refused=r.get("held_refused"),
+                max_err_deg=r.get("max_err_deg"))
+        return r
+
     def send(name, q, pos=None):
         """One move (blocking). Returns False if it was stopped."""
         nonlocal sim_q
@@ -322,8 +382,10 @@ def main():
         print(f"  {name}: {where}-> {fmt(target)}")
         if arm is None:
             sim_q = np.array(q, float)
+            cmd.update(target)
+            log("move_done", label=name, ok=True, goal=target, dry_run=True)
             return True
-        r = arm.move(target, args.speed)
+        r = do_move(target, args.speed, name)
         print(f"    reached (max err {r['max_err_deg']:.1f} deg){'  CLAMPED: ' + str(r['clamped']) if r['clamped'] else ''}")
         if r.get("stopped"):
             print("    STOPPED (Ctrl+C on the server) - plan cleared")
@@ -336,7 +398,8 @@ def main():
             arm.close()
             return
 
-    st = {"clicks": {}, "goal": None, "plan": [], "surface": 0, "q_now": current_q(), "t_read": time.time()}
+    st = {"clicks": {}, "goal": None, "plan": [], "surface": 0, "joints": real_now(), "t_read": time.time()}
+    st["q_now"] = real_to_sim(st["joints"], jm, env.q_home)
 
     def update_goal():
         rays = [(o, d) for _, _, o, d in st["clicks"].values()]
@@ -344,7 +407,9 @@ def main():
         if st["plan"]:
             print("  (new click: the plan was for the old goal and is cleared - SPACE / D again)")
         st["goal"], st["plan"] = None, []
+        clicks = {cam: c[:2] for cam, c in st["clicks"].items()}
         if not rays:
+            log("goal", goal=None, clicks=clicks)
             return
         name, z = SURFACES[st["surface"]]
         if z is None and len(rays) == 1:
@@ -365,11 +430,13 @@ def main():
             how = (f"{' + '.join(cams)} rays{'' if z is None else ' on the ' + name}, misses {np.round(res * 1000, 1)} mm, "
                    f"expected error x/y +-{e_xy * 1000:.1f} mm, height +-{e_z * 1000:.1f} mm")
         print(f"goal {np.round(p, 3)} m ({np.linalg.norm(p[:2]) * 100:.1f} cm from the base; {how})")
+        log("goal", goal=p, clicks=clicks, surface=name, how=how)
 
     def on_top(event, u, v, _flags, _param):
         if event == cv2.EVENT_LBUTTONDOWN:
             u, v = u / TOP_SHOW, v / TOP_SHOW                # back to calibration pixels
             st["clicks"]["top"] = (int(u), int(v), *cam_ray(kin.m, kin.set(sim_q).d, "top_camera", u, v, TW, TH))
+            log("click", camera="top", u=u, v=v)
             update_goal()
 
     def on_wrist(event, u, v, _flags, _param):
@@ -379,6 +446,7 @@ def main():
                 return
             # the camera pose from the joints the arm reports right now
             st["clicks"]["wrist"] = (u, v, *cam_ray(kin.m, kin.set(current_q()).d, "wrist_camera", u, v, WW, WH))
+            log("click", camera="wrist", u=u, v=v)
             update_goal()
 
     def on_base(event, u, v, _flags, _param):
@@ -391,9 +459,17 @@ def main():
                 return
             u, v = u / BASE_SHOW, v / BASE_SHOW                   # back to calibration pixels
             st["clicks"]["base"] = (int(u), int(v), *base.ray(kin.set(current_q()), u, v))
+            log("click", camera="base", u=u, v=v)
             update_goal()
 
     def plan(kind):
+        """plan_raw + one events.jsonl line (the keyframes as real motor targets, or refused)."""
+        out = plan_raw(kind)
+        log("plan", plan=kind, ok=bool(out), goal=st["goal"],
+            steps=[{"name": n, "gripper_point": pos, "target": sim_to_real(q, jm)} for n, q, pos in out])
+        return out
+
+    def plan_raw(kind):
         """Keyframes [(name, q, gripper point)] for kind = hover / down / park; [] (with a message) if refused."""
         q_now = current_q()
         tcp_now = kin.set(q_now).tcp_pos()
@@ -460,13 +536,15 @@ def main():
         st["clicks"].pop("base", None)
         if arm is None:
             sim_q = real_to_sim(target, jm, sim_q)   # target = only the moved motors
+            cmd.update(target)
             reached = real_now()
+            log("move_done", label="motors window", ok=True, goal=target, dry_run=True)
         else:
-            r = arm.move(target, speed)
+            r = do_move(target, speed, "motors window")
             reached = r["joints"]
             if r["clamped"]:
                 print(f"  clamped to the limits: {r['clamped']}")
-        st["q_now"], st["t_read"] = real_to_sim(reached, jm, env.q_home), time.time()
+        st["q_now"], st["t_read"], st["joints"] = real_to_sim(reached, jm, env.q_home), time.time(), dict(reached)
         return reached
 
     def set_gripper(value):
@@ -474,6 +552,7 @@ def main():
         if not panel.set_value("gripper", value):
             print(f"gripper is HELD at {held['gripper']:.0f} - not changed (press HELD in the motors window)")
             return
+        log("gripper", value=value, key="x" if value == REAL_GRIPPER_CLOSED else "o")
         now = (real_now() if arm is not None else {}).get("gripper", grip)
         print(f"gripper -> {grip:.0f} (now at {now:.0f}{', blocked: holding something?' if abs(now - grip) > 5 else ''})")
 
@@ -496,6 +575,7 @@ def main():
         if "gripper" in held:
             grip = held["gripper"]
         print(f"  {m} {'HELD at ' + format(held[m], '.1f') if on else 'released'}")
+        log("hold", motor=m, on=on, held=held)
         return dict(held)
 
     panel = MotorPanel(DRY_LIMITS if r0 is None else r0["limits"], real_now(), panel_move, panel_check,
@@ -507,63 +587,103 @@ def main():
     if base_cap is not None:
         cv2.namedWindow(BASE_WIN, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
         cv2.setMouseCallback(BASE_WIN, on_base)
+    grabbers = {"top": Grabber(top_cap, crop_to_4_3, "top")}
+    if wrist_cap is not None:
+        grabbers["wrist"] = Grabber(wrist_cap, None, "wrist")
+    if base_cap is not None:
+        grabbers["base"] = Grabber(base_cap, crop_to_4_3, "base")
+    poly = np.array([calib["corners_px"][c] for c in align.CORNERS], np.int32)
+
+    def render(q_now, kr, moving=False):
+        """The camera windows as shown: overlays on copies of the newest frames. kr: the Kin to draw with (the
+        move-time recorder thread has its own). Returns {camera: image}."""
+        views = {}
+        top = grabbers["top"].get().copy()
+        cv2.polylines(top, [poly], True, (0, 0, 255), 2)
+        cv2.drawContours(top, zone_hover, -1, (255, 200, 0), 2, cv2.LINE_AA)
+        if args.allow_down:
+            cv2.drawContours(top, zone_down, -1, (255, 255, 255), 2, cv2.LINE_AA)
+        draw_arm(top, kr, q_now, (0, 220, 255), TW, TH)
+        if st["plan"]:
+            draw_arm(top, kr, st["plan"][-1][1], (255, 0, 255), TW, TH)
+        kr.set(q_now)
+        if "top" in st["clicks"]:
+            cv2.drawMarker(top, st["clicks"]["top"][:2], (0, 255, 255), cv2.MARKER_CROSS, 40, 3)
+        if st["goal"] is not None:
+            px = project(kr.m, kr.d, "top_camera", st["goal"], TW, TH)
+            if px is not None:
+                cv2.circle(top, px, 14, (0, 255, 0), 4)
+        view = cv2.resize(top, None, fx=TOP_SHOW, fy=TOP_SHOW, interpolation=cv2.INTER_AREA)
+        status = f"surface: {SURFACES[st['surface']][0]} (P)   " + (
+            "moving ..." if moving else
+            f"plan: {' -> '.join(n for n, _, _ in st['plan'])}  ENTER = go" if st["plan"] else
+            "SPACE / ENTER = plan hover" + ("   D = down" if args.allow_down else ""))
+        cv2.putText(view, status, (8, view.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+                    cv2.LINE_AA)
+        ep = rec.ep if rec is not None else None
+        if ep is not None:
+            cv2.circle(view, (18, 18), 8, (0, 0, 255), -1)
+            cv2.putText(view, f"REC episode {ep['idx']:03d}  {rec.elapsed():.0f} s   R = end + save  B = discard",
+                        (32, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA)
+        elif rec is not None:
+            cv2.putText(view, "R = start recording an episode", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                        (0, 0, 255), 1, cv2.LINE_AA)
+        views["top"] = view
+
+        if "wrist" in grabbers:
+            wrist = grabbers["wrist"].get().copy()
+            if "wrist" in st["clicks"]:
+                cv2.drawMarker(wrist, st["clicks"]["wrist"][:2], (0, 255, 255), cv2.MARKER_CROSS, 24, 2)
+            if st["goal"] is not None and arm is not None:
+                px = project(kr.m, kr.d, "wrist_camera", st["goal"], WW, WH)
+                if px is not None:
+                    cv2.circle(wrist, px, 10, (0, 255, 0), 3)
+            views["wrist"] = wrist
+
+        if "base" in grabbers:
+            bimg = grabbers["base"].get().copy()
+            if base is not None:
+                tip = base.project(kr, fixed_tip(kr))          # live check of the calibration
+                if tip is not None:
+                    cv2.circle(bimg, tip, 9, (0, 220, 255), 3)
+                if st["goal"] is not None and arm is not None:
+                    px = base.project(kr, st["goal"])
+                    if px is not None:
+                        cv2.circle(bimg, px, 16, (0, 255, 0), 4)
+            if "base" in st["clicks"]:
+                cv2.drawMarker(bimg, st["clicks"]["base"][:2], (0, 255, 255), cv2.MARKER_CROSS, 40, 3)
+            views["base"] = cv2.resize(bimg, None, fx=BASE_SHOW, fy=BASE_SHOW, interpolation=cv2.INTER_AREA)
+        return views
+
+    if args.record is not None:
+        rec = Recorder(args.record, fps=args.rec_fps,
+                       calib_files=[TOP_CAM_CALIB, WRIST_CLICK_CALIB, BASE_CLICK_CALIB, MAP_FILE],
+                       info={"tool": "click_goal_real.py",
+                             "cameras": {"top": {"index": args.top_cam, "mode": TOP_RES, "view_scale": TOP_SHOW},
+                                         "wrist": None if wrist_cap is None else
+                                         {"index": args.wrist_cam, "mode": WRIST_RES, "view_scale": 1.0},
+                                         "base": None if base_cap is None else
+                                         {"index": args.base_cam, "mode": BASE_RES, "view_scale": BASE_SHOW}},
+                             "speed_deg_s": args.speed, "allow_down": args.allow_down, "dry_run": arm is None})
+        print(f"recording to {rec.folder}  -  R = start an episode, R again = end + save, B = throw it away")
     print("left-click the goal in the top camera (optionally also in the wrist camera), SPACE = plan, "
           "ENTER = move, C = clear, H = park, P = surface, Q = quit")
 
     try:
         while True:
-            if time.time() - st["t_read"] > 0.2 and not panel.dragging:   # where the arm is, a few times a second
-                joints = real_now()
-                st["q_now"], st["t_read"] = real_to_sim(joints, jm, env.q_home), time.time()
-                panel.set_now(joints)
-            top = crop_to_4_3(frame(top_cap, 1))
-            poly = np.array([calib["corners_px"][c] for c in align.CORNERS], np.int32)
-            cv2.polylines(top, [poly], True, (0, 0, 255), 2)
-            cv2.drawContours(top, zone_hover, -1, (255, 200, 0), 2, cv2.LINE_AA)
-            if args.allow_down:
-                cv2.drawContours(top, zone_down, -1, (255, 255, 255), 2, cv2.LINE_AA)
-            draw_arm(top, kin, st["q_now"], (0, 220, 255), TW, TH)
-            if st["plan"]:
-                draw_arm(top, kin, st["plan"][-1][1], (255, 0, 255), TW, TH)
-            kin.set(st["q_now"])
-            if "top" in st["clicks"]:
-                cv2.drawMarker(top, st["clicks"]["top"][:2], (0, 255, 255), cv2.MARKER_CROSS, 40, 3)
-            if st["goal"] is not None:
-                px = project(kin.m, kin.d, "top_camera", st["goal"], TW, TH)
-                if px is not None:
-                    cv2.circle(top, px, 14, (0, 255, 0), 4)
-            view = cv2.resize(top, None, fx=TOP_SHOW, fy=TOP_SHOW, interpolation=cv2.INTER_AREA)
-            status = f"surface: {SURFACES[st['surface']][0]} (P)   " + (
-                f"plan: {' -> '.join(n for n, _, _ in st['plan'])}  ENTER = go" if st["plan"] else
-                "SPACE / ENTER = plan hover" + ("   D = down" if args.allow_down else ""))
-            cv2.putText(view, status, (8, view.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
-                        cv2.LINE_AA)
-            cv2.imshow(TOP_WIN, view)
-
-            if wrist_cap is not None:
-                wrist = frame(wrist_cap, 1)
-                if "wrist" in st["clicks"]:
-                    cv2.drawMarker(wrist, st["clicks"]["wrist"][:2], (0, 255, 255), cv2.MARKER_CROSS, 24, 2)
-                if st["goal"] is not None and arm is not None:
-                    px = project(kin.m, kin.d, "wrist_camera", st["goal"], WW, WH)
-                    if px is not None:
-                        cv2.circle(wrist, px, 10, (0, 255, 0), 3)
-                cv2.imshow(WRIST_WIN, wrist)
-
-            if base_cap is not None:
-                bimg = crop_to_4_3(frame(base_cap, 1))
-                if base is not None:
-                    kin.set(st["q_now"])
-                    tip = base.project(kin, fixed_tip(kin))        # live check of the calibration
-                    if tip is not None:
-                        cv2.circle(bimg, tip, 9, (0, 220, 255), 3)
-                    if st["goal"] is not None and arm is not None:
-                        px = base.project(kin, st["goal"])
-                        if px is not None:
-                            cv2.circle(bimg, px, 16, (0, 255, 0), 4)
-                if "base" in st["clicks"]:
-                    cv2.drawMarker(bimg, st["clicks"]["base"][:2], (0, 255, 255), cv2.MARKER_CROSS, 40, 3)
-                cv2.imshow(BASE_WIN, cv2.resize(bimg, None, fx=BASE_SHOW, fy=BASE_SHOW, interpolation=cv2.INTER_AREA))
+            due = time.time() - st["t_read"] > 0.2 or (rec is not None and rec.due())
+            if due and not panel.dragging:                    # where the arm is (each frame while recording)
+                st["joints"] = real_now()
+                st["q_now"], st["t_read"] = real_to_sim(st["joints"], jm, env.q_home), time.time()
+                panel.set_now(st["joints"])
+            views = render(st["q_now"], kin)
+            cv2.imshow(TOP_WIN, views["top"])
+            if "wrist" in views:
+                cv2.imshow(WRIST_WIN, views["wrist"])
+            if "base" in views:
+                cv2.imshow(BASE_WIN, views["base"])
+            if rec is not None and rec.active:
+                rec.add(views, state=st["joints"], action=cmd)
 
             key = cv2.waitKey(1) & 0xFF
             panel.poll()
@@ -586,25 +706,48 @@ def main():
                     if st["plan"]:
                         print("  planned hover (magenta) - ENTER again to move")
                     continue
+                log("execute", steps=[n for n, _, _ in st["plan"]])
                 for name, q, pos in st["plan"]:
                     if not send(name, q, pos):
                         break
                 st["plan"] = []
                 joints = real_now()
-                st["q_now"], st["t_read"] = real_to_sim(joints, jm, env.q_home), time.time()
+                st["q_now"], st["t_read"], st["joints"] = real_to_sim(joints, jm, env.q_home), time.time(), joints
                 panel.sync({**joints, "gripper": grip})         # sliders := where the arm went
                 st["clicks"].pop("wrist", None)                 # its ray used the old wrist camera pose
                 st["clicks"].pop("base", None)                  # ... and this one the old shoulder_pan
             elif key in (ord("x"), ord("o")):
                 set_gripper(REAL_GRIPPER_CLOSED if key == ord("x") else REAL_GRIPPER_OPEN)
             elif key == ord("c"):
+                log("clear")
                 st["clicks"].clear()
                 update_goal()
             elif key == ord("p"):
                 st["surface"] = (st["surface"] + 1) % len(SURFACES)
                 print(f"clicked surface: {SURFACES[st['surface']][0]}")
+                log("surface", surface=SURFACES[st["surface"]][0])
                 update_goal()
+            elif key == ord("r"):
+                if rec is None:
+                    print("not recording: start the tool with --record NAME")
+                elif not rec.active:
+                    idx, d = rec.start()
+                    log("episode_start", joints=st["joints"], action=cmd, goal=st["goal"], surface=SURFACES[st["surface"]][0],
+                        clicks={cam: c[:2] for cam, c in st["clicks"].items()}, held=held, speed=args.speed)
+                    print(f"REC episode {idx:03d} -> {d}   (R = end + save, B = throw away)")
+                else:
+                    d, n = rec.stop(keep=True)
+                    print(f"saved episode: {d} ({n} frames)")
+            elif key == ord("b"):
+                if rec is not None and rec.active:
+                    _, n = rec.stop(keep=False)
+                    print(f"episode thrown away ({n} frames)")
     finally:
+        if rec is not None and rec.active:
+            d, n = rec.stop(keep=True)
+            print(f"saved the running episode: {d} ({n} frames)")
+        for g in grabbers.values():
+            g.stop()
         top_cap.release()
         if wrist_cap is not None:
             wrist_cap.release()

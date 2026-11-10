@@ -8,8 +8,10 @@
     TOP_RES=1920x1080
     WRIST_RES=640x480
     BASE_RES=1920x1080
+    CAM_FOURCC=MJPG
 
-The resolution is the mode asked from the camera; top and base images are then centre-cropped to 4:3 (1920x1080 ->
+CAM_FOURCC: the pixel format asked from the cameras (MJPG = compressed, fast; YUYV = raw, ~1 fps at 1920x1080;
+empty = the camera's choice). The resolution is the mode asked from the camera; top and base images are then centre-cropped to 4:3 (1920x1080 ->
 1440x1080). The calibrations were measured in these modes: change one only together with a new calibration
 (top: calibrate_top_camera.py, wrist: fit_wrist_points.py, base: calib_base_camera.py).
 
@@ -20,7 +22,7 @@ import os
 
 ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 DEFAULTS = {"TOP_CAM": 2, "WRIST_CAM": 4, "BASE_CAM": None,      # BASE_CAM: no base camera unless .env names one
-            "TOP_RES": "1920x1080", "WRIST_RES": "640x480", "BASE_RES": "1920x1080"}
+            "TOP_RES": "1920x1080", "WRIST_RES": "640x480", "BASE_RES": "1920x1080", "CAM_FOURCC": "MJPG"}
 
 
 def _read_env_file(path=ENV_FILE):
@@ -63,3 +65,8 @@ def cam_res(key):
 
 TOP_CAM, WRIST_CAM, BASE_CAM = cam_index("TOP_CAM"), cam_index("WRIST_CAM"), cam_index("BASE_CAM")
 TOP_RES, WRIST_RES, BASE_RES = cam_res("TOP_RES"), cam_res("WRIST_RES"), cam_res("BASE_RES")
+CAM_FOURCC = str(os.environ.get("CAM_FOURCC", _read_env_file().get("CAM_FOURCC", DEFAULTS["CAM_FOURCC"]))).strip()
+if CAM_FOURCC.lower() in ("", "none", "off"):
+    CAM_FOURCC = ""
+elif len(CAM_FOURCC) != 4:
+    raise SystemExit(f"CAM_FOURCC={CAM_FOURCC!r}: 4 letters, e.g. MJPG or YUYV")

@@ -58,13 +58,17 @@ from real_env import REAL_GRIPPER_OPEN, REAL_GRIPPER_CLOSED                     
 
 WINDOW = "real SO-101 VLA (what the model sees)"
 IMG_W, IMG_H = 448, 336
-from cam_config import TOP_CAM, WRIST_CAM, BASE_CAM, TOP_RES, WRIST_RES, BASE_RES       # noqa: E402,F401  (.env)
+from cam_config import TOP_CAM, WRIST_CAM, BASE_CAM, TOP_RES, WRIST_RES, BASE_RES, CAM_FOURCC   # noqa: E402,F401 (.env)
 # TOP_RES (from .env): the top camera mode top_camera_calib.json was measured in (other modes may crop the sensor)
 MIN_TCP_Z = MAT_TOP + 0.015   # refuse targets that would push the gripper point into the table
 
 
 def open_camera(index, width=640, height=480):
+    """CAM_FOURCC (.env, default MJPG): compressed frames - ~11 fps at 1920x1080 instead of ~1 fps with YUYV, and far
+    less USB bandwidth for 3 cameras. Same field of view as YUYV (checked 10-11-2026: 0.0 px shift on all three)."""
     cap = cv2.VideoCapture(index)
+    if CAM_FOURCC:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*CAM_FOURCC))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)

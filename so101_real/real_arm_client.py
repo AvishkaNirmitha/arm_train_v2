@@ -65,7 +65,10 @@ class ArmClient:
     def read(self):
         return self._call(cmd="read")
 
-    def move(self, target_deg, speed_deg_s=20.0):
+    def move(self, target_deg, speed_deg_s=20.0, trace=False):
+        """trace=True: the reply also has "trace" [{t, cmd, joints}] at 10 Hz (an older arm_server just leaves it out)."""
+        if trace:
+            return self._call(cmd="move", target=target_deg, speed=speed_deg_s, trace=True)
         return self._call(cmd="move", target=target_deg, speed=speed_deg_s)
 
     def free(self, free=True):

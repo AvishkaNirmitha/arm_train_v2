@@ -21,6 +21,7 @@ from so101_arm import make_arm, ATTACHED, PORT, ROBOT_ID
 from arm_protocol import ADDRESS, AUTHKEY
 
 CONTROL_HZ = 50
+TRACE_EVERY = 5             # move(trace=True): joints read every 5th control step (10 Hz) for recordings
 MAX_SPEED_DEG_S = 60.0      # hard cap, whatever the client asks for
 LIMIT_MARGIN_DEG = 3.0
 TICKS_PER_REV = 4096
@@ -88,10 +89,11 @@ class ArmServer:
             print("WARNING: can't read Goal_Position, starting from Present_Position:", ex)
             return self.read()
 
-    def move(self, target, speed):
+    def move(self, target, speed, trace=False):
         """Smooth (smoothstep) joint interpolation to target {motor: deg}. Unknown / unmounted motors are ignored.
         Motors not in target keep their current goal (they get no new command). HELD motors keep their held value
-        whatever the target says (reported in "held_refused")."""
+        whatever the target says (reported in "held_refused"). trace: also return [{t, cmd, joints}] at 10 Hz
+        (what each motor was told and where it was; t = time.time()) - for recordings."""
         ignored = sorted(set(target) - set(self.motors))
         held_refused = sorted(m for m in target if m in self.held and abs(float(target[m]) - self.held[m]) > 0.05)
         if held_refused:
@@ -111,23 +113,40 @@ class ArmServer:
         speed = min(max(float(speed), 1.0), MAX_SPEED_DEG_S)
         duration = max(max(abs(goal[m] - start[m]) for m in self.motors) / speed, 0.3)
         n = max(int(duration * CONTROL_HZ), 1)
-        stopped = False
+        stopped, rows = False, []
+
+        def sample(cmd):
+            try:
+                rows.append({"t": time.time(), "cmd": dict(cmd), "joints": self.read()})
+            except Exception:            # a missed read only leaves a gap in the trace
+                pass
+
         try:
+            if trace:
+                sample(start)
             for i in range(1, n + 1):
                 a = i / n
                 a = a * a * (3 - 2 * a)
-                self.arm.send_action({f"{m}.pos": start[m] + a * (goal[m] - start[m]) for m in self.motors})
+                cmd = {m: start[m] + a * (goal[m] - start[m]) for m in self.motors}
+                self.arm.send_action({f"{m}.pos": v for m, v in cmd.items()})
+                if trace and i % TRACE_EVERY == 0:
+                    sample(cmd)
                 time.sleep(1 / CONTROL_HZ)
             time.sleep(0.3)  # settle
+            if trace:
+                sample(goal)
         except KeyboardInterrupt:
             here = {**self.read(), **self.held}   # a held motor keeps its value (e.g. still squeezing a block)
             self.arm.send_action({f"{m}.pos": v for m, v in here.items()})
             stopped = True
             print("\nSTOPPED by Ctrl+C, holding here:", self.fmt(here))
         final = self.read()
-        return {"ok": not stopped, "stopped": stopped, "joints": final, "goal": goal, "clamped": clamped,
-                "ignored": ignored, "locked": sorted(self.locked), "held": dict(self.held), "held_refused": held_refused,
-                "max_err_deg": max(abs(final[m] - goal[m]) for m in self.motors)}
+        out = {"ok": not stopped, "stopped": stopped, "joints": final, "goal": goal, "clamped": clamped,
+               "ignored": ignored, "locked": sorted(self.locked), "held": dict(self.held), "held_refused": held_refused,
+               "max_err_deg": max(abs(final[m] - goal[m]) for m in self.motors)}
+        if trace:
+            out["trace"] = rows
+        return out
 
     def hold(self, motor, on, value=None):
         """on: keep motor at value (default: what it is told now) - every move (any client) leaves it there."""
@@ -174,7 +193,7 @@ def handle(server, msg):
         return {"ok": True, "joints": server.read(), "raw": server.read_raw(), "limits": server.limits,
                 "held": dict(server.held)}
     if cmd == "move":
-        return server.move(msg["target"], msg.get("speed", 20.0))
+        return server.move(msg["target"], msg.get("speed", 20.0), bool(msg.get("trace", False)))
     if cmd == "free":
         return server.set_free(bool(msg.get("free", True)))
     if cmd == "hold":

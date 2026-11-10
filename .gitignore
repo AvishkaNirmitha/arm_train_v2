@@ -30,3 +30,6 @@ so101_real/runs
 
 
 *.zip
+
+# Recorded episodes (click_goal_real.py --record)
+/recordings
