@@ -5,24 +5,29 @@ the wrist camera from wrist_camera_calib.json + the joint angles the arm reports
   * top click only     -> where the ray hits the surface you clicked on (P: block top / mat / any height)
   * top + wrist clicks -> the point closest to both rays (weighted least squares) and the known surface height;
                           with "any height" the rays alone. No depth camera needed.
+  * base camera (BASE_CAM in .env, on the base, turns with shoulder_pan; calib_base_camera.py) -> one more ray, from
+                          the side: it sees the height well. Any 1-3 cameras can be combined.
 The arm goes to the hover point above the goal (gripper point at least HOVER_Z, so the jaws clear a block) and,
 with --allow-down, down to it and the gripper can be closed / opened (a manual pick).
 
 Drawn in the top view: RED = calibrated mat outline (if it doesn't sit on the mat edges, the camera moved: run
 align_top_camera.py), BLUE = where the arm can hover, WHITE = where it can also go down (--allow-down),
-YELLOW = the arm where it is now, MAGENTA = the planned pose, GREEN = the goal.
+YELLOW = the arm where it is now, MAGENTA = the planned pose, GREEN = the goal. In the base view YELLOW = where the
+calibration puts the fixed jaw's tip (if it isn't on the real tip, run calib_base_camera.py again).
 
 Needs: arm_server.py running (.venv-lerobot), unless --no-arm. Run in .venv:
 
     python so101_real/click_goal_real.py --no-arm       # dry run: click, see the 3-D point and the plan
     python so101_real/click_goal_real.py                # move to the hover point only
     python so101_real/click_goal_real.py --allow-down   # + D = down to the goal, X / O = close / open the gripper
+    python so101_real/click_goal_real.py --no-base --allow-down   # without the base camera (on when BASE_CAM is in .env)
+Camera indexes come from .env (TOP_CAM / WRIST_CAM / BASE_CAM, see cam_config.py); --top-cam etc. override them.
 
 The "motors" window (motor_panel.py) has one slider per motor (wrist_roll excluded): drag + let go, wheel, -/+ or
 type a value to move one motor; the sim checks the path stays above the table. A manual move clears the plan.
 
 Keys (in a camera window):
-    left-click  the goal (one point per window)        P      clicked surface: block top / mat / any height
+    left-click  the goal (one point per camera window)  P      clicked surface: block top / mat / any height
     SPACE/ENTER plan: hover above the goal             D      plan: down to the goal (--allow-down)
     ENTER       do the planned move                    X / O  gripper close / open (or the motors window)
     C           clear clicks and plan                  H      plan: back to the parked pose
@@ -46,10 +51,12 @@ from real_env import (TOP_CAM_CALIB, ARM_JOINTS, MAT_TOP, MAT_HALF, BLOCK_HALF, 
 from pick_task import PickEnv, MAX_GRASP_TILT_DEG                                            # noqa: E402
 from reach_task import REACH_RADIUS                                                           # noqa: E402
 from real_arm_client import ArmClient, load_joint_map, sim_to_real, real_to_sim               # noqa: E402
-from real_robot_policy import open_camera, crop_to_4_3, fmt, TOP_CAM, WRIST_CAM, TOP_RES, MIN_TCP_Z  # noqa: E402
+from real_robot_policy import open_camera, crop_to_4_3, fmt, MIN_TCP_Z                       # noqa: E402
+from cam_config import TOP_CAM, WRIST_CAM, BASE_CAM, TOP_RES, WRIST_RES, BASE_RES       # noqa: E402  (.env)
 from capture_wrist_calib import frame, check_top_alignment                                    # noqa: E402
 import align_top_camera as align                                                              # noqa: E402
 from motor_panel import MotorPanel, path_check, DRY_LIMITS                                    # noqa: E402
+from base_camera import BaseCam, fixed_tip                                                    # noqa: E402
 
 BLOCK_TOP = MAT_TOP + 2 * BLOCK_HALF[2]
 SURFACES = [("block top", BLOCK_TOP), ("mat", MAT_TOP), ("any height", None)]   # what was clicked (P)
@@ -62,6 +69,8 @@ LIFT_FIRST = 0.02                # ... if the move goes this far sideways
 MAX_LIFT_TILT_DEG = 45.0         # the lift is only "up from here": any reasonable wrist angle will do
 TOP_SHOW = 0.5                   # top window scale (1440x1080 -> 720x540)
 TOP_WIN, WRIST_WIN = "top camera (click the goal)", "wrist camera (optional 2nd click)"
+BASE_WIN = "base camera (optional click)"
+BASE_SHOW = 0.5                  # base window scale (1440x1080 -> 720x540)
 LINKS = ["shoulder", "upper_arm", "lower_arm", "wrist", "gripper"]
 REACH_MAP = os.path.join(HERE, "click_reach_map.json")   # cache of reach_map()
 WRIST_CLICK_CALIB = os.path.join(HERE, "wrist_click_calib.json")   # fit_wrist_points.py: wrist camera for clicks
@@ -216,9 +225,12 @@ def reach_outlines(ok, kin, w, h, level):
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--top-cam", type=int, default=TOP_CAM)
-    ap.add_argument("--wrist-cam", type=int, default=WRIST_CAM)
-    ap.add_argument("--no-wrist", action="store_true", help="top camera only")
+    ap.add_argument("--top-cam", type=int, default=TOP_CAM, help=f"top camera index (TOP_CAM in .env: {TOP_CAM})")
+    ap.add_argument("--wrist-cam", type=int, default=WRIST_CAM, help=f"wrist camera index (WRIST_CAM in .env: {WRIST_CAM})")
+    ap.add_argument("--no-wrist", action="store_true", help="no wrist camera")
+    ap.add_argument("--base-cam", type=int, default=BASE_CAM,
+                    help=f"base camera index (BASE_CAM in .env: {BASE_CAM}; used whenever it is set)")
+    ap.add_argument("--no-base", action="store_true", help="don't use the base camera this time")
     ap.add_argument("--no-arm", action="store_true", help="dry run: no arm_server, nothing moves")
     ap.add_argument("--allow-down", action="store_true", help="allow D (down to the goal) and the gripper keys")
     ap.add_argument("--speed", type=float, default=15.0, help="joint speed, deg/s")
@@ -227,7 +239,13 @@ def main():
     with open(TOP_CAM_CALIB) as f:
         calib = json.load(f)
     top_cap = open_camera(args.top_cam, *TOP_RES)
-    wrist_cap = None if args.no_wrist else open_camera(args.wrist_cam)
+    wrist_cap = None if args.no_wrist else open_camera(args.wrist_cam, *WRIST_RES)
+    if args.no_base:
+        args.base_cam = None
+    base_cap = None if args.base_cam is None else open_camera(args.base_cam, *BASE_RES)
+    print(f"cameras: top {args.top_cam} ({TOP_RES[0]}x{TOP_RES[1]}), wrist "
+          f"{'off' if args.no_wrist else f'{args.wrist_cam} ({WRIST_RES[0]}x{WRIST_RES[1]})'}, base "
+          f"{'off' if args.base_cam is None else f'{args.base_cam} ({BASE_RES[0]}x{BASE_RES[1]})'}  (defaults from .env)")
     env = PickEnv(randomize=False)       # wrist_roll at the taped angle, IK inside the real limits
     kin = Kin(env)
     # Ray accuracy (rad), for weighting the rays: calibration error + click error, over the focal length
@@ -247,6 +265,14 @@ def main():
                   f"now has {np.degrees(env.roll):.2f} - run fit_wrist_points.py again")
     elif not args.no_wrist:
         print("wrist camera: silhouette calibration only - 2-camera clicks will be rough; run fit_wrist_points.py")
+    base = None
+    if base_cap is not None:
+        base = BaseCam.load()
+        if base is None:
+            print("base camera: NOT calibrated - its clicks are ignored; run calib_base_camera.py first")
+        else:
+            sigma["base"] = np.hypot(base.rms_px, CLICK_PX / BASE_SHOW) / base.f
+            print(f"base camera: calibrated ({base.rms_px:.1f} px), ray accuracy {np.degrees(sigma['base']):.2f} deg")
     print(f"ray accuracy: top {np.degrees(sigma['top']):.2f} deg, wrist {np.degrees(sigma['wrist']):.2f} deg")
     jm = load_joint_map()
     arm = None if args.no_arm else ArmClient()
@@ -263,6 +289,11 @@ def main():
     ok = reach_map(env)
     kin.set(env.q_home)
     zone_hover, zone_down = (reach_outlines(ok, kin, TW, TH, level) for level in (1, 2))
+    if base is not None:
+        BH, BW = crop_to_4_3(frame(base_cap)).shape[:2]
+        if [BW, BH] != [base.w, base.h]:
+            print(f"WARNING: base image {BW}x{BH}, calibrated at {base.w}x{base.h} - base clicks are ignored")
+            base = None
     if [TW, TH] != calib["image_size"]:
         print(f"WARNING: top image {TW}x{TH}, calibrated at {calib['image_size']} - the clicks will be off")
     err = check_top_alignment(top, calib)
@@ -350,6 +381,18 @@ def main():
             st["clicks"]["wrist"] = (u, v, *cam_ray(kin.m, kin.set(current_q()).d, "wrist_camera", u, v, WW, WH))
             update_goal()
 
+    def on_base(event, u, v, _flags, _param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if base is None:
+                print("base camera not calibrated (or wrong image size): run calib_base_camera.py")
+                return
+            if arm is None:
+                print("base clicks need the arm (shoulder_pan gives the base camera pose) - not with --no-arm")
+                return
+            u, v = u / BASE_SHOW, v / BASE_SHOW                   # back to calibration pixels
+            st["clicks"]["base"] = (int(u), int(v), *base.ray(kin.set(current_q()), u, v))
+            update_goal()
+
     def plan(kind):
         """Keyframes [(name, q, gripper point)] for kind = hover / down / park; [] (with a message) if refused."""
         q_now = current_q()
@@ -414,6 +457,7 @@ def main():
             print("  manual move: plan cleared")
         st["plan"] = []
         st["clicks"].pop("wrist", None)
+        st["clicks"].pop("base", None)
         if arm is None:
             sim_q = real_to_sim(target, jm, sim_q)   # target = only the moved motors
             reached = real_now()
@@ -460,6 +504,9 @@ def main():
     if wrist_cap is not None:
         cv2.namedWindow(WRIST_WIN, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
         cv2.setMouseCallback(WRIST_WIN, on_wrist)
+    if base_cap is not None:
+        cv2.namedWindow(BASE_WIN, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
+        cv2.setMouseCallback(BASE_WIN, on_base)
     print("left-click the goal in the top camera (optionally also in the wrist camera), SPACE = plan, "
           "ENTER = move, C = clear, H = park, P = surface, Q = quit")
 
@@ -503,6 +550,21 @@ def main():
                         cv2.circle(wrist, px, 10, (0, 255, 0), 3)
                 cv2.imshow(WRIST_WIN, wrist)
 
+            if base_cap is not None:
+                bimg = crop_to_4_3(frame(base_cap, 1))
+                if base is not None:
+                    kin.set(st["q_now"])
+                    tip = base.project(kin, fixed_tip(kin))        # live check of the calibration
+                    if tip is not None:
+                        cv2.circle(bimg, tip, 9, (0, 220, 255), 3)
+                    if st["goal"] is not None and arm is not None:
+                        px = base.project(kin, st["goal"])
+                        if px is not None:
+                            cv2.circle(bimg, px, 16, (0, 255, 0), 4)
+                if "base" in st["clicks"]:
+                    cv2.drawMarker(bimg, st["clicks"]["base"][:2], (0, 255, 255), cv2.MARKER_CROSS, 40, 3)
+                cv2.imshow(BASE_WIN, cv2.resize(bimg, None, fx=BASE_SHOW, fy=BASE_SHOW, interpolation=cv2.INTER_AREA))
+
             key = cv2.waitKey(1) & 0xFF
             panel.poll()
             if key in (ord("q"), 27):
@@ -532,6 +594,7 @@ def main():
                 st["q_now"], st["t_read"] = real_to_sim(joints, jm, env.q_home), time.time()
                 panel.sync({**joints, "gripper": grip})         # sliders := where the arm went
                 st["clicks"].pop("wrist", None)                 # its ray used the old wrist camera pose
+                st["clicks"].pop("base", None)                  # ... and this one the old shoulder_pan
             elif key in (ord("x"), ord("o")):
                 set_gripper(REAL_GRIPPER_CLOSED if key == ord("x") else REAL_GRIPPER_OPEN)
             elif key == ord("c"):
@@ -545,6 +608,8 @@ def main():
         top_cap.release()
         if wrist_cap is not None:
             wrist_cap.release()
+        if base_cap is not None:
+            base_cap.release()
         cv2.destroyAllWindows()
         panel.close()
         if arm is not None:

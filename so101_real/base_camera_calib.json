@@ -1,0 +1,37 @@
+{
+  "body": "shoulder",
+  "R_body_cam": [
+    [
+      0.088369,
+      0.364793,
+      -0.926886
+    ],
+    [
+      -0.975749,
+      0.218785,
+      -0.006921
+    ],
+    [
+      0.200264,
+      0.905019,
+      0.37528
+    ]
+  ],
+  "t_body_cam": [
+    -0.13852,
+    -0.00189,
+    0.00508
+  ],
+  "fovy": 60.14,
+  "image_size": [
+    1440,
+    1080
+  ],
+  "rms_px": 10.65,
+  "ray_mm": 0.97,
+  "loo_px": 14.45,
+  "loo_mm": 1.26,
+  "n_points": 14,
+  "data": "/home/asus/Desktop/works/60_pick_place_advanced/so101_real/captures/base_calib_10-11-2026-13-56-18",
+  "created": "2026-11-10T13:58:16"
+}

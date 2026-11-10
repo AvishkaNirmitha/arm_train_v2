@@ -7,7 +7,7 @@ turn the camera until green sits on red (all corners < OK_PX), then fix the came
 
 Move the arm off the mat edges first (parked or folded at the front edge is fine: the front edge is not used).
 
-    python so101_real/align_top_camera.py            # camera 2 (real_robot_policy.TOP_CAM)
+    python so101_real/align_top_camera.py            # TOP_CAM from .env (or --cam N)
     python so101_real/align_top_camera.py --cam 3
 Keys: q / Esc = quit, s = save a snapshot (align_top_camera_snapshot.jpg)
 """

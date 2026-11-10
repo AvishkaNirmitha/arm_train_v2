@@ -11,7 +11,7 @@ the mat; arm_server.py clamps to the calibrated limits and stops on Ctrl+C.
 
 Run in .venv, with arm_server.py running in .venv-lerobot (not needed with --no-arm):
 
-    python so101_real/real_robot_policy.py --lora <ckpt> --no-arm   # look first (cameras 2 / 4)
+    python so101_real/real_robot_policy.py --lora <ckpt> --no-arm   # look first (cameras from .env)
     python so101_real/real_robot_policy.py --lora <ckpt>            # then move
     python so101_real/real_robot_policy.py --lora <ckpt> --manual   # you pick each phase with one key press
     python so101_real/real_robot_policy.py --lora <ckpt> --save     # + keep every step's images / answer (runs/)
@@ -58,8 +58,8 @@ from real_env import REAL_GRIPPER_OPEN, REAL_GRIPPER_CLOSED                     
 
 WINDOW = "real SO-101 VLA (what the model sees)"
 IMG_W, IMG_H = 448, 336
-TOP_CAM, WRIST_CAM = 2, 4     # /dev/video2, /dev/video4 on this laptop
-TOP_RES = (1920, 1080)        # top camera mode top_camera_calib.json was measured in (other modes may crop the sensor)
+from cam_config import TOP_CAM, WRIST_CAM, BASE_CAM, TOP_RES, WRIST_RES, BASE_RES       # noqa: E402,F401  (.env)
+# TOP_RES (from .env): the top camera mode top_camera_calib.json was measured in (other modes may crop the sensor)
 MIN_TCP_Z = MAT_TOP + 0.015   # refuse targets that would push the gripper point into the table
 
 
@@ -403,7 +403,7 @@ def main():
         raise SystemExit("--top-only is for the pick task")
     joint_map = load_joint_map()
     env, phases, prompt_for, parse, start_extra = make_task(task, args.refine)   # env: kinematics only (safety checks)
-    caps = [open_camera(args.top_cam, *TOP_RES), open_camera(args.wrist_cam)]
+    caps = [open_camera(args.top_cam, *TOP_RES), open_camera(args.wrist_cam, *WRIST_RES)]
     policy = VLMPolicy(args.lora, args.load_in_4bit)
     arm = None if args.no_arm else ArmClient()
     log = StepLog(os.path.join(HERE, "runs")) if args.save else None

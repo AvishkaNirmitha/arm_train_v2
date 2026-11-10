@@ -23,7 +23,7 @@ sys.path.insert(0, HERE)
 from real_env import TOP_CAM_CALIB, MAT_TOP, BLOCK_HALF, HOVER_Z, REAL_GRIPPER_OPEN, quat_to_mat  # noqa: E402
 from pick_task import PickEnv                                                                   # noqa: E402
 from real_arm_client import ArmClient, load_joint_map, sim_to_real                              # noqa: E402
-from real_robot_policy import open_camera, crop_to_4_3, fmt, TOP_CAM, WRIST_CAM, TOP_RES       # noqa: E402
+from real_robot_policy import open_camera, crop_to_4_3, fmt, TOP_CAM, WRIST_CAM, TOP_RES, WRIST_RES   # noqa: E402
 import align_top_camera as align                                                                # noqa: E402
 
 BLOCK_TOP = MAT_TOP + 2 * BLOCK_HALF[2]
@@ -108,7 +108,7 @@ def main():
     out = os.path.join(HERE, "captures", f"wrist_calib_{datetime.now():%d-%m-%Y-%H-%M-%S}")
     os.makedirs(out)
     log = open(os.path.join(out, "poses.jsonl"), "a")
-    top_cap, wrist_cap = open_camera(args.top_cam, *TOP_RES), open_camera(args.wrist_cam)
+    top_cap, wrist_cap = open_camera(args.top_cam, *TOP_RES), open_camera(args.wrist_cam, *WRIST_RES)
     env = PickEnv(randomize=False)
     jm = load_joint_map()
     arm = ArmClient()
