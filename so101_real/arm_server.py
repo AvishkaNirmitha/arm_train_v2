@@ -30,7 +30,8 @@ TICKS_PER_REV = 4096
 # (lift: sim -100..100 + 99.6; elbow: sim -96.8..96.8 - 91.9), trimmed; the folded rest pose reads 0 / 0.
 MANUAL_LIMITS_DEG = {"shoulder_lift": (-2.0, 195.0), "elbow_flex": (-185.0, 2.0)}
 FULL_TURN_TICKS = 4000
-GRIPPER_LIMITS = (2.0, 98.0)   # 0..100 units; a little inside the calibrated ends
+from cam_config import GRIPPER_MIN, GRIPPER_MAX   # noqa: E402  (.env)
+GRIPPER_LIMITS = (GRIPPER_MIN, GRIPPER_MAX)   # 0..100 units (GRIPPER_MIN / GRIPPER_MAX in .env); every command clamped
 
 
 class ArmServer:

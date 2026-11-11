@@ -31,7 +31,8 @@ from real_arm_client import ArmClient, load_joint_map, sim_to_real, real_to_sim 
 
 MOTORS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "gripper"]   # never wrist_roll
 WIN = "motors"
-GRIPPER_OPEN, GRIPPER_CLOSED = 93.8, 2.0
+from cam_config import GRIPPER_MIN, GRIPPER_MAX   # noqa: E402  (.env)
+GRIPPER_OPEN, GRIPPER_CLOSED = 93.8, 2.0   # buttons; set_value() clamps them into the gripper limits
 SETTLE = 0.35                # s after the last wheel / button step before it is sent (one move for several steps)
 STEPS = (0.5, 1.0, 2.0, 5.0, 10.0)
 SPEEDS = (5, 10, 15, 20, 30, 45, 60)
@@ -39,7 +40,7 @@ GRIP_SPEED = 60.0            # units/s when only the gripper moves (arm_server c
 LINK_MIN_Z = 0.01            # m: lowest a link origin may go (robot frame, table ~0)
 BASE_R, BASE_Z = 0.09, 0.14  # m: the wrist / jaws / gripper point must stay out of this cylinder round the base
 DRY_LIMITS = {"shoulder_pan": (-92.6, 92.6), "shoulder_lift": (-2.0, 195.0), "elbow_flex": (-185.0, 2.0),
-              "wrist_flex": (-97.6, 97.6), "gripper": (2.0, 98.0)}   # --no-arm (arm_server reports the real ones)
+              "wrist_flex": (-97.6, 97.6), "gripper": (GRIPPER_MIN, GRIPPER_MAX)}   # --no-arm (arm_server reports the real ones)
 
 # layout (px) and colours (BGR)
 W, ROW_H, TOP_PAD, BAR_H = 980, 74, 14, 120
@@ -94,11 +95,14 @@ def button(img, x, y, w, h, label, active=False, scale=0.6):
 
 
 class MotorPanel:
-    def __init__(self, limits, now, move, check=None, speed=20.0, title=WIN, closable=True, hold=None, held=None):
+    def __init__(self, limits, now, move, check=None, speed=20.0, title=WIN, closable=True, hold=None, held=None,
+                 embed=False):
         """limits {motor: (lo, hi)} and now {motor: value} in real units (deg, gripper 0..100).
         move(target, speed) -> {motor: reached value} (blocking). check(target) -> (None or why refused, info text).
         hold(motor, on) -> {motor: value} of all HELD motors (arm_server keeps them there for every client);
-        held = that dict at the start."""
+        held = that dict at the start.
+        embed: no window of its own - draw() leaves the picture in self.img and the owner shows it inside its own
+        window and passes the mouse on with mouse(event, x, y, flags) (x, y in self.img pixels)."""
         self.motors = [m for m in MOTORS if m in limits and m in now]
         self.limits = {m: tuple(map(float, limits[m])) for m in self.motors}
         self.move_fn, self.check_fn = move, check
@@ -109,14 +113,16 @@ class MotorPanel:
         self.step = 1.0
         self.pending, self.pending_t, self.drag, self.closed = False, 0.0, None, False
         self.status, self.status_c = "", FG
-        self.win, self.closable = title, closable
+        self.win, self.closable, self.embed, self.img = title, closable, embed, None
+        self.on_show = None                  # embedded: called when the panel must be shown right now
         self.hold_fn = hold
         self.held = {}
         self.set_held(held or {})
         self.h = TOP_PAD + ROW_H * len(self.motors) + BAR_H
         self.buttons = []                                            # [(x0, y0, x1, y1, action)] for clicks
-        cv2.namedWindow(self.win, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
-        cv2.setMouseCallback(self.win, self._mouse)
+        if not embed:
+            cv2.namedWindow(self.win, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
+            cv2.setMouseCallback(self.win, self._mouse)
         self._preview()
         self.draw()
 
@@ -202,6 +208,9 @@ class MotorPanel:
         text(img, self.status, (NAME_X, y + 66), 0.55, self.status_c, 1)
         text(img, "drag + let go / wheel / - + : move one motor     orange mark = real position", (NAME_X, y + 94),
              0.45, DIM)
+        self.img = img
+        if self.embed:                       # the owner shows it
+            return
         try:
             if cv2.getWindowProperty(self.win, cv2.WND_PROP_VISIBLE) < 1:   # closed with the window's X
                 if self.closable:
@@ -222,6 +231,10 @@ class MotorPanel:
         self.buttons.append((x, y, x + w, y + h, action))
 
     # ---- input -----------------------------------------------------------------------------------------------
+    def mouse(self, event, x, y, flags=0):
+        """Embedded: a mouse event at (x, y) of self.img."""
+        self._mouse(event, x, y, flags, None)
+
     def _mouse(self, event, x, y, flags, _param):
         if event == cv2.EVENT_LBUTTONDOWN:
             for x0, y0, x1, y1, act in self.buttons:
@@ -255,8 +268,8 @@ class MotorPanel:
             self.speed = act[1]
         elif kind == "stepsize":
             self.step = act[1]
-        elif kind == "set":
-            self.set_value(act[1], act[2])
+        elif kind == "set":                  # a button: only queue it - poll() sends it from the main loop. Moving
+            self.queue_value(act[1], act[2])   # inside this mouse callback (it calls cv2.pollKey) hangs cv2.waitKey
         elif kind == "hold":
             self.toggle_hold(act[1])
 
@@ -306,6 +319,8 @@ class MotorPanel:
         speed = GRIP_SPEED if changed == ["gripper"] else float(self.speed)
         self._status_set(f"moving {', '.join(changed)} ...", FILL)
         self.draw()
+        if self.embed and self.on_show is not None:
+            self.on_show()                   # the owner puts the new picture in its window
         cv2.pollKey()                        # show it before the (blocking) move
         try:
             reached = self.move_fn(target, speed)
@@ -342,6 +357,18 @@ class MotorPanel:
                 self.cmd[m] = self.val[m] = float(joints[m])
         self.set_now(joints)
         self._preview()
+
+    def queue_value(self, m, value):
+        """Like set_value, but sent by the next poll() (safe from a mouse callback). False if m is HELD."""
+        if self._is_held(m):
+            return False
+        lo, hi = self.limits[m]
+        self.drag = None
+        self.val = dict(self.cmd)            # only this motor changes
+        self.val[m] = float(np.clip(value, lo, hi))
+        self._preview()
+        self._request(now=True)
+        return True
 
     def set_value(self, m, value):
         """Set one slider and send it now (e.g. gripper open / close). Returns False if m is HELD."""
@@ -381,6 +408,8 @@ class MotorPanel:
     def close(self):
         if not self.closed:
             self.closed = True
+            if self.embed:
+                return
             try:
                 cv2.destroyWindow(self.win)
             except cv2.error:

@@ -1,4 +1,5 @@
-"""Camera indexes (/dev/videoN) and resolutions from the project's .env file, so a re-plug only means editing one file.
+"""Camera indexes (/dev/videoN), resolutions, frame rates and the arm's USB port from the project's .env file, so a
+re-plug only means editing one file.
 
 .env (project root, next to so101_real/), one KEY=value per line, # for comments:
 
@@ -9,6 +10,18 @@
     WRIST_RES=640x480
     BASE_RES=1920x1080
     CAM_FOURCC=MJPG
+    CAM_FPS=30
+    REC_FPS=10
+    ARM_PORT=/dev/ttyACM0
+    GRIPPER_MIN=2
+    GRIPPER_MAX=98
+
+CAM_FPS: the frame rate asked from the cameras (they give what their mode allows: measured ~11-18 fps).
+REC_FPS: frames per second written by click_goal_real.py --record (--rec-fps overrides it).
+GRIPPER_MIN / GRIPPER_MAX: the gripper range arm_server allows (lerobot units, 0 = closed end .. 100 = open end of
+its calibration); every command from every script is clamped into it (close / open included).
+ARM_PORT: the arm's USB serial port (arm_server.py / so101_arm.py; --port overrides it). It can change to
+/dev/ttyACM1 on a re-plug: check with  ls /dev/ttyACM*
 
 CAM_FOURCC: the pixel format asked from the cameras (MJPG = compressed, fast; YUYV = raw, ~1 fps at 1920x1080;
 empty = the camera's choice). The resolution is the mode asked from the camera; top and base images are then centre-cropped to 4:3 (1920x1080 ->
@@ -22,7 +35,9 @@ import os
 
 ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 DEFAULTS = {"TOP_CAM": 2, "WRIST_CAM": 4, "BASE_CAM": None,      # BASE_CAM: no base camera unless .env names one
-            "TOP_RES": "1920x1080", "WRIST_RES": "640x480", "BASE_RES": "1920x1080", "CAM_FOURCC": "MJPG"}
+            "TOP_RES": "1920x1080", "WRIST_RES": "640x480", "BASE_RES": "1920x1080", "CAM_FOURCC": "MJPG",
+            "CAM_FPS": 30, "REC_FPS": 10, "ARM_PORT": "/dev/ttyACM0",
+            "GRIPPER_MIN": 2.0, "GRIPPER_MAX": 98.0}
 
 
 def _read_env_file(path=ENV_FILE):
@@ -70,3 +85,23 @@ if CAM_FOURCC.lower() in ("", "none", "off"):
     CAM_FOURCC = ""
 elif len(CAM_FOURCC) != 4:
     raise SystemExit(f"CAM_FOURCC={CAM_FOURCC!r}: 4 letters, e.g. MJPG or YUYV")
+
+
+def _env(key):
+    return str(os.environ.get(key, _read_env_file().get(key, DEFAULTS[key]))).strip()
+
+
+def _num(key):
+    val = _env(key)
+    try:
+        return float(val)
+    except ValueError:
+        raise SystemExit(f"{ENV_FILE}: {key}={val!r} is not a number")
+
+
+CAM_FPS = _num("CAM_FPS")
+REC_FPS = _num("REC_FPS")
+ARM_PORT = _env("ARM_PORT")
+GRIPPER_MIN, GRIPPER_MAX = _num("GRIPPER_MIN"), _num("GRIPPER_MAX")
+if not 0.0 <= GRIPPER_MIN < GRIPPER_MAX <= 100.0:
+    raise SystemExit(f"{ENV_FILE}: need 0 <= GRIPPER_MIN < GRIPPER_MAX <= 100, got {GRIPPER_MIN:g} / {GRIPPER_MAX:g}")

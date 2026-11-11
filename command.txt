@@ -157,3 +157,5 @@ and tell me what do think about that and what we can do for that ?
    [C]  27 cm / 21 cm
 Turn the block to a different angle at each position, e.g. A straight, B about 30°, C about 60°.
 
+
+.venv/bin/python so101_real/click_goal_real.py --allow-down --record pick_white_cube

@@ -24,7 +24,10 @@ from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 ALL_MOTORS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")  # ids 1..6
 ATTACHED = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "gripper")  # add "wrist_roll" when mounted
 
-PORT = "/dev/ttyACM0"
+try:                                    # ARM_PORT in the project's .env (cam_config.py); --port overrides it
+    from cam_config import ARM_PORT as PORT
+except ImportError:
+    PORT = "/dev/ttyACM0"
 ROBOT_ID = "so101_arm"
 
 
