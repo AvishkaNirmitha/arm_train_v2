@@ -1,0 +1,18 @@
+{
+  "offset_m": [
+    0.01375,
+    0.01907
+  ],
+  "sd_mm": [
+    6.9,
+    5.0
+  ],
+  "loo_median_mm": 7.4,
+  "picks": 21,
+  "recordings": [
+    "recordings/11_11_2026_pick_white_cube_3",
+    "recordings/12_11_2026_pick_white_cube_4"
+  ],
+  "top_calib_created": "2026-11-05T11:16:49",
+  "created": "2026-11-12T13:01:32"
+}

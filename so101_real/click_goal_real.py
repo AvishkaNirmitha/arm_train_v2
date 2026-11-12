@@ -35,8 +35,33 @@ Keys (in a camera window):
     ENTER       do the planned move                    X / O  gripper close / open (or the motors window)
     C           clear clicks and plan                  H      plan: back to the parked pose
     R           (--record) start / end + save an episode   B  (--record) throw the running episode away
+    A           (--suggest) do the model's answer          G  (--suggest) ask the model again
+    N           (--suggest) forget the model's history
+    arrows      move the gripper point 1 cm as seen in the top view (up = up in the picture), at the same height
+    PgUp / PgDn move it 1 cm up / down                 S      arrow step 1 cm <-> 3 cm
+    M           snap top clicks to the block / pad on / off (on at the start; --no-snap = off)
     Q / Esc     quit
-Every move waits for ENTER; Ctrl+C in the arm_server terminal stops a move on the spot.
+After every move the arm's sag is corrected (shoulder_lift / elbow_flex stop 1-4 deg short under the arm's weight,
+~1 cm at the gripper): a short second move to target + (target - reached), up to 2 rounds, at most 5 deg beyond the
+target, never pushing the gripper point down (--no-correct = off). "corrected: 3.2 -> 0.4 deg" in the messages.
+Every planned move waits for ENTER; an arrow step moves at once (small, and checked like a plan: reach, tilt, the
+table, the base, no IK flip). Holding an arrow keeps stepping and stops when you let go. Ctrl+C in the arm_server
+terminal stops a move on the spot. Arrow steps are recorded as "nudge" events (build_decisions.py skips them for
+now: the decision model has no answer for them yet).
+
+Snap (snap_top.py, M): a top click goes to the white block / green pad next to it (within 4 cm) - a box fitted to the
+block's blob, the pad's middle - plus the top camera -> arm offset (top_arm_offset.json from fit_top_offset.py; the
+arm needs to go ~2 cm from where the top camera sees things). Works for the decision model's clicks too (A). The
+cyan box = the block it found; "no snap" (block partly hidden by the arm, nothing near) = the click as it is.
+
+--suggest [LORA]: suggest mode (decision_suggest.py; default LORA: the decide_v1 checkpoint). Whenever the arm stops
+the decision model (colab_train_decide.ipynb) is asked what to do next: its click shows as a BLUE dot in that camera,
+its answer as text in the top view. A = accept (a click is placed like yours - then SPACE / D / ENTER as usual; a
+gripper answer is sent like X / O), or ignore it and do your own step. Nothing moves without your ENTER / key. With
+--record the episodes are recorded as always (your steps are the training data; the model's answers and accepts are
+"suggest" / "suggest_accept" events). Needs all three cameras and ~5 GB of GPU memory (--suggest-4bit: less).
+
+    python so101_real/click_goal_real.py --allow-down --suggest --record pick_white_cube_suggest
 
 --record NAME: episodes go to recordings/<dd_mm_yyyy>_NAME/episode_NNN/ - the three cameras as clean pictures (MP4,
 no overlays: the training data), the same with the overlays as shown in overlay/ (for the viewer; --no-rec-overlay
@@ -66,9 +91,10 @@ from real_robot_policy import open_camera, crop_to_4_3, fmt, MIN_TCP_Z          
 from cam_config import TOP_CAM, WRIST_CAM, BASE_CAM, TOP_RES, WRIST_RES, BASE_RES, REC_FPS   # noqa: E402  (.env)
 from capture_wrist_calib import frame, check_top_alignment                                    # noqa: E402
 import align_top_camera as align                                                              # noqa: E402
-from motor_panel import MotorPanel, path_check, DRY_LIMITS, GRIP_SPEED                                    # noqa: E402
+from motor_panel import MotorPanel, path_check, DRY_LIMITS, GRIP_SPEED                        # noqa: E402
 from base_camera import BaseCam, fixed_tip, BASE_CLICK_CALIB                                  # noqa: E402
 from recorder import Grabber, Recorder                                                        # noqa: E402
+from snap_top import TopCam, snap as snap_click, load_arm_offset, OFFSET_FILE                  # noqa: E402
 
 BLOCK_TOP = MAT_TOP + 2 * BLOCK_HALF[2]
 SURFACES = [("block top", BLOCK_TOP), ("mat", MAT_TOP), ("any height", None)]   # what was clicked (P)
@@ -88,7 +114,22 @@ TILE_W, TILE_H = 600, 450        # one camera in it (4:3); the window can be res
 DASH_BG, DASH_FG, DASH_DIM = (26, 24, 22), (225, 228, 232), (150, 156, 165)
 DASH_HELP = ["click the goal in the top camera (wrist / base = optional 2nd ray)",
              "SPACE plan hover   D plan down   ENTER move   H park   C clear   P surface",
-             "X / O gripper close / open   R record start / stop   B discard episode   Q quit"]
+             "X / O gripper close / open   R record start / stop   B discard episode   Q quit",
+             "arrows move the gripper as seen in the top view, PgUp / PgDn up / down   S step 1 / 3 cm",
+             "M snap top clicks to the block / pad on / off (cyan box = the block it found)"]
+# Arrow keys (cv2.waitKeyEx codes, X11 keysyms - Qt and GTK backends): (name, (image right, image up, height))
+NUDGE_KEYS = {0xFF51: ("left", (-1, 0, 0)), 0xFF53: ("right", (1, 0, 0)), 0xFF52: ("up", (0, 1, 0)),
+              0xFF54: ("down", (0, -1, 0)), 0xFF55: ("raise", (0, 0, 1)), 0xFF56: ("lower", (0, 0, -1))}
+NUDGE_STEPS = (0.01, 0.03)       # m per key press (S switches)
+NUDGE_MAX_JOINT_DEG = 15.0       # a step needing a bigger joint change = an IK jump: refused
+CORRECT_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")   # sag correction (not the gripper)
+CORRECT_TOL_DEG = 0.7            # a motor further off its target than this gets a correction move
+CORRECT_MAX_DEG = 5.0            # command at most this far beyond the target
+CORRECT_ROUNDS = 2
+SUGGEST_LORA = os.path.join(HERE, "checkpoints", "qwen35_2b_so101_decide_v1_colab", "lora")
+SUGGEST_HELP = "A accept the model's answer (blue)   G ask the model again   N forget its history"
+SUGGEST_COLOR = (255, 155, 45)   # BGR: the model's point / answer (blue, as on the eval page)
+SUGGEST_SETTLE = 0.4             # s after the arm stopped before the pictures for the model are taken
 
 
 class LogTee:
@@ -216,6 +257,38 @@ def draw_arm(img, kin, q, color, scale_w, scale_h):
             cv2.circle(img, p, 7, color, -1)
 
 
+def plan_nudge(env, kin, q_now, d, step):
+    """Arrow key: the gripper point `step` m from where it is now, d = (image right, image up, height) in the top
+    camera's view (right / up flattened onto the table, so a move is purely sideways or purely up / down).
+    Returns (q, target, None) or (None, target, why it is refused) - the same checks as a planned move."""
+    kin.set(q_now)
+    R = kin.d.cam_xmat[kin.m.camera("top_camera").id].reshape(3, 3)
+    right, up = R[:, 0].copy(), R[:, 1].copy()          # camera x = image right, y = image up
+    right[2] = up[2] = 0.0
+    right, up = right / np.linalg.norm(right), up / np.linalg.norm(up)
+    tcp = kin.tcp_pos()
+    target = tcp + step * (d[0] * right + d[1] * up) + np.array([0.0, 0.0, step * d[2]])
+    if d[2] < 0:
+        if tcp[2] <= MIN_TCP_Z + 0.001:
+            return None, target, f"already at the lowest allowed height ({MIN_TCP_Z * 100:.1f} cm)"
+        target[2] = max(target[2], MIN_TCP_Z)
+    r = np.linalg.norm(target[:2])
+    if r < REACH_RADIUS[0] - 0.01 and r < np.linalg.norm(tcp[:2]):
+        return None, target, f"{r * 100:.1f} cm from the base (the jaws would hit it)"
+    max_tilt = MAX_GRASP_TILT_DEG if target[2] < LOW_Z else MAX_HOVER_TILT_DEG
+    q4, e, tilt = env._solve(target, q_now[:4])
+    if e > 2e-3 or tilt > max_tilt:
+        return None, target, f"not reachable (err {e * 1000:.1f} mm, tilt {tilt:.0f} deg, max {max_tilt:.0f})"
+    q = env.full_q(q4)
+    jump = np.degrees(np.max(np.abs(q[:4] - q_now[:4])))
+    if jump > NUDGE_MAX_JOINT_DEG:
+        return None, target, f"the arm would flip ({jump:.0f} deg joint change for a small step)"
+    err, _ = path_check(kin, q_now, q, min_tcp_z=MIN_TCP_Z)
+    if err:
+        return None, target, err
+    return q, target, None
+
+
 def reach_map(env):
     """Where the plan checks pass, per (azimuth, radius) of MAP_AZ x MAP_R: 2 = hover and down, 1 = hover only,
     0 = neither. Takes ~30 s, so it is cached in REACH_MAP (for this wrist_roll and these joint limits)."""
@@ -279,6 +352,13 @@ def main():
     ap.add_argument("--rec-fps", type=float, default=REC_FPS, help=f"recording frame rate (REC_FPS in .env: {REC_FPS:g})")
     ap.add_argument("--no-rec-overlay", action="store_true",
                     help="record only the clean camera pictures (no overlay/ copies for the viewer: half the disk)")
+    ap.add_argument("--suggest", nargs="?", const=SUGGEST_LORA, default=None, metavar="LORA",
+                    help="suggest mode: the decision model proposes the next step (blue), A = accept it "
+                         f"(default LORA: {os.path.relpath(SUGGEST_LORA)})")
+    ap.add_argument("--suggest-4bit", action="store_true", help="load the decision model in 4 bit (less GPU memory)")
+    ap.add_argument("--no-snap", action="store_true", help="start with snapping off (M switches it)")
+    ap.add_argument("--no-correct", action="store_true",
+                    help="no sag correction after a move (the arm stops 1-4 deg short under its weight)")
     args = ap.parse_args()
     tee = None
     if not args.windows:
@@ -294,6 +374,15 @@ def main():
     print(f"cameras: top {args.top_cam} ({TOP_RES[0]}x{TOP_RES[1]}), wrist "
           f"{'off' if args.no_wrist else f'{args.wrist_cam} ({WRIST_RES[0]}x{WRIST_RES[1]})'}, base "
           f"{'off' if args.base_cam is None else f'{args.base_cam} ({BASE_RES[0]}x{BASE_RES[1]})'}  (defaults from .env)")
+    sugg = None                          # --suggest: the decision model (decision_suggest.py)
+    if args.suggest is not None:
+        if wrist_cap is None or base_cap is None:
+            raise SystemExit("--suggest needs all three cameras (the model was trained on top + wrist + base)")
+        if not os.path.isdir(args.suggest):
+            raise SystemExit(f"--suggest: {args.suggest} not found (unzip the LoRA into so101_real/checkpoints/)")
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")       # the base model is in the local cache
+        from decision_suggest import Suggester
+        sugg = Suggester(args.suggest, args.suggest_4bit)
     env = PickEnv(randomize=False)       # wrist_roll at the taped angle, IK inside the real limits
     kin = Kin(env)
     # Ray accuracy (rad), for weighting the rays: calibration error + click error, over the focal length
@@ -366,9 +455,17 @@ def main():
     kin_rec = Kin(env)                   # its own MjData: the move-time recorder thread draws with it
 
     def log(kind, **data):
-        """One line in the running episode's events.jsonl (nothing if not recording)."""
+        """One line in the running episode's events.jsonl (nothing if not recording); --suggest: the model's
+        history is rebuilt from the same events."""
+        if sugg is not None:
+            sugg.history.event(kind, data)
         if rec is not None:
             rec.event(kind, **data)
+
+    def ask_model():
+        """--suggest: ask the model once the arm has settled (the main loop takes the pictures)."""
+        if sugg is not None:
+            st["ask_at"] = time.time() + SUGGEST_SETTLE
 
     def record_during_move(target, speed, stop_evt):
         """Thread: while arm.move() blocks, keep recording - newest camera frames, the arm drawn where it should be
@@ -430,6 +527,49 @@ def main():
         if r.get("stopped"):
             print("    STOPPED (Ctrl+C on the server) - plan cleared")
             return False
+        if not args.no_correct:
+            return correct(name, target, r)
+        return True
+
+    def tcp_of(real):
+        return kin.set(real_to_sim(real, jm, env.q_home)).tcp_pos()
+
+    def correct(name, target, r):
+        """The arm sags: shoulder_lift / elbow_flex stop 1-4 deg short under the arm's weight (~1 cm at the gripper).
+        Command target + (target - reached) - the motor then settles on the target - up to CORRECT_ROUNDS times.
+        Only the 4 arm motors (never the gripper: it stops on a block on purpose; never wrist_roll). A correction
+        that would push the gripper point DOWN is not sent: sag always leaves it too low, so then something holds
+        the arm up (the table, a block). Returns False if a correction move was stopped."""
+        joints = [m for m in CORRECT_JOINTS if m in target and m not in held]
+        aim = {m: float(target[m]) for m in joints}
+        reached = r.get("joints") or {}
+        if not joints or not all(m in reached for m in joints):
+            return True
+        first = None
+        for k in range(CORRECT_ROUNDS):
+            err = {m: aim[m] - float(reached[m]) for m in joints}
+            worst = max(abs(e) for e in err.values())
+            first = worst if first is None else first
+            if worst <= CORRECT_TOL_DEG:
+                break
+            new = {m: float(np.clip(float(cmd.get(m, aim[m])) + err[m], aim[m] - CORRECT_MAX_DEG, aim[m] + CORRECT_MAX_DEG))
+                   for m in joints}
+            if tcp_of({**target, **new})[2] < tcp_of(target)[2] - 0.002:
+                print(f"    correction skipped: it would push the gripper down (held up by something?) - "
+                      f"off by {worst:.1f} deg")
+                log("correction", label=name, skipped="push down", err=err)
+                return True
+            log("correction", label=name, round=k + 1, err=err, command=new)
+            r = do_move({**target, **new}, args.speed, f"{name} correction")
+            if r.get("stopped"):
+                print("    STOPPED (Ctrl+C on the server) - plan cleared")
+                return False
+            reached = r.get("joints") or reached
+        err = {m: aim[m] - float(reached[m]) for m in joints}
+        worst = max(abs(e) for e in err.values())
+        if first is not None and first > CORRECT_TOL_DEG:
+            miss = np.linalg.norm(tcp_of({**target, **{m: reached[m] for m in joints}}) - tcp_of(target)) * 1000
+            print(f"    corrected: {first:.1f} -> {worst:.1f} deg off the target (gripper point {miss:.0f} mm from it)")
         return True
 
     if arm is not None:
@@ -438,8 +578,17 @@ def main():
             arm.close()
             return
 
-    st = {"clicks": {}, "goal": None, "plan": [], "surface": 0, "joints": real_now(), "t_read": time.time()}
+    st = {"clicks": {}, "goal": None, "plan": [], "surface": 0, "joints": real_now(), "t_read": time.time(),
+          "ask_at": None, "big_step": False, "key_next": None, "snap": not args.no_snap, "snapped": None}
     st["q_now"] = real_to_sim(st["joints"], jm, env.q_home)
+    topcam = TopCam.from_mujoco(kin.m, kin.set(env.q_home).d, TW, TH)     # snapping (snap_top.py)
+    arm_offset = load_arm_offset()
+    if arm_offset is None:
+        print(f"WARNING: no {os.path.basename(OFFSET_FILE)} - snapped clicks go to the block itself, not where the "
+              "arm needs to go (~2 cm off): run fit_top_offset.py")
+        arm_offset = np.zeros(2)
+    else:
+        print(f"snap: on (M = off), top camera -> arm offset {np.round(arm_offset * 1000, 1)} mm")
 
     def update_goal():
         rays = [(o, d) for _, _, o, d in st["clicks"].values()]
@@ -475,8 +624,20 @@ def main():
     def on_top(event, u, v, _flags, _param):
         if event == cv2.EVENT_LBUTTONDOWN:
             u, v = u / TOP_SHOW, v / TOP_SHOW                # back to calibration pixels
+            extra = {}
+            st["snapped"] = None
+            if st["snap"]:                                   # the block / pad next to the click (snap_top.py)
+                r = snap_click(grabbers["top"].get(), u, v, topcam, poly, SURFACES[st["surface"]][1], arm_offset)
+                extra = {"raw_u": u, "raw_v": v, "snap": r["kind"], "snap_mm": r["dist_mm"], "snap_iou": r["iou"]}
+                if r["kind"] is not None:
+                    u, v = float(r["pixel"][0]), float(r["pixel"][1])
+                    st["snapped"] = r
+                    print(f"snapped to the {r['kind']} ({r['dist_mm']:.0f} mm from the click"
+                          + (f", fit {r['iou']:.2f}" if r["iou"] is not None else "") + ")")
+                else:
+                    print(f"  no snap: {r['why']} - the click is used as it is")
             st["clicks"]["top"] = (int(u), int(v), *cam_ray(kin.m, kin.set(sim_q).d, "top_camera", u, v, TW, TH))
-            log("click", camera="top", u=u, v=v)
+            log("click", camera="top", u=u, v=v, **extra)
             update_goal()
 
     def on_wrist(event, u, v, _flags, _param):
@@ -594,6 +755,7 @@ def main():
             log("gripper_open" if g_to > g_before else "gripper_close", value=g_to, before=g_before, now=g_now,
                 source=grip_src["v"], blocked=abs(g_now - g_to) > 5)
         grip_src["v"] = "motors window"
+        ask_model()                          # the arm stopped somewhere new
         return reached
 
     def set_gripper(value, source):
@@ -676,6 +838,31 @@ def main():
             out.update({f"overlay/{c}": v for c, v in views.items()})
         return out
 
+    def draw_model_point(img, cam):
+        """--suggest: the model's click (blue) on the full-size picture of cam."""
+        s = sugg.result if sugg is not None else None
+        if s and s["label"] == f"click_{cam}" and s["x"] is not None:
+            h, w = img.shape[:2]
+            px, r = (int(s["x"] * w), int(s["y"] * h)), max(8, w // 90)
+            cv2.circle(img, px, r, SUGGEST_COLOR, max(2, r // 3), cv2.LINE_AA)
+            cv2.circle(img, px, max(2, r // 4), SUGGEST_COLOR, -1, cv2.LINE_AA)
+
+    def model_banner(view):
+        """--suggest: the model's answer (or that it is thinking) in the top view."""
+        if sugg is None:
+            return
+        s = sugg.result
+        if st.get("ask_at") is not None or sugg.thinking():
+            text = "model: thinking ..."
+        elif s is None:
+            text = "model: G = ask"
+        else:
+            text = f"model: {s['text'] if s['label'] else 'not understood: ' + s['text']}   A = accept"
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        y = 52
+        cv2.rectangle(view, (4, y - th - 8), (16 + tw, y + 6), (0, 0, 0), -1)
+        cv2.putText(view, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, SUGGEST_COLOR, 2, cv2.LINE_AA)
+
     def render(q_now, kr, moving=False, frames=None):
         """The camera windows as shown: overlays on copies of the newest frames (or of frames). kr: the Kin to draw
         with (the move-time recorder thread has its own). Returns {camera: image}."""
@@ -696,7 +883,18 @@ def main():
             px = project(kr.m, kr.d, "top_camera", st["goal"], TW, TH)
             if px is not None:
                 cv2.circle(top, px, 14, (0, 255, 0), 4)
+        sn = st["snapped"]
+        if sn is not None:                                   # the snapped block (cyan box) / pad (cyan ring)
+            if sn["outline"] is not None:
+                o = np.int32(np.round(sn["outline"]))
+                for a, b in ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4)):
+                    cv2.line(top, tuple(o[a]), tuple(o[b]), (255, 255, 0), 2, cv2.LINE_AA)
+            else:
+                c = topcam.project(sn["point"])[0]
+                cv2.circle(top, tuple(np.int32(c)), 22, (255, 255, 0), 3, cv2.LINE_AA)
+        draw_model_point(top, "top")
         view = cv2.resize(top, None, fx=TOP_SHOW, fy=TOP_SHOW, interpolation=cv2.INTER_AREA)
+        model_banner(view)
         status = f"surface: {SURFACES[st['surface']][0]} (P)   " + (
             "moving ..." if moving else
             f"plan: {' -> '.join(n for n, _, _ in st['plan'])}  ENTER = go" if st["plan"] else
@@ -721,6 +919,7 @@ def main():
                 px = project(kr.m, kr.d, "wrist_camera", st["goal"], WW, WH)
                 if px is not None:
                     cv2.circle(wrist, px, 10, (0, 255, 0), 3)
+            draw_model_point(wrist, "wrist")
             views["wrist"] = wrist
 
         if "base" in grabbers:
@@ -735,6 +934,7 @@ def main():
                         cv2.circle(bimg, px, 16, (0, 255, 0), 4)
             if "base" in st["clicks"]:
                 cv2.drawMarker(bimg, st["clicks"]["base"][:2], (0, 255, 255), cv2.MARKER_CROSS, 40, 3)
+            draw_model_point(bimg, "base")
             views["base"] = cv2.resize(bimg, None, fx=BASE_SHOW, fy=BASE_SHOW, interpolation=cv2.INTER_AREA)
         return views
 
@@ -766,7 +966,7 @@ def main():
         cv2.line(img, (0, TILE_H), (W_, TILE_H), (70, 70, 70), 2)
         # keys + the last messages
         x0, y = pw + 16, TILE_H + 26
-        for line in DASH_HELP:
+        for line in DASH_HELP + ([SUGGEST_HELP] if sugg is not None else []):
             cv2.putText(img, line, (x0, y), cv2.FONT_HERSHEY_SIMPLEX, 0.47, DASH_FG, 1, cv2.LINE_AA)
             y += 22
         cv2.line(img, (x0, y - 8), (W_ - 16, y - 8), (70, 70, 70), 1)
@@ -833,6 +1033,60 @@ def main():
         print(f"recording to {rec.folder}  -  R = start an episode, R again = end + save, B = throw it away")
     print("left-click the goal in the top camera (optionally also in the wrist camera), SPACE = plan, "
           "ENTER = move, C = clear, H = park, P = surface, Q = quit")
+    if sugg is not None:
+        # click pixels -> 0..1 of the picture (as build_decisions: the full camera frame, before the window scale)
+        sugg.history.sizes = {c: (f.shape[1], f.shape[0]) for c, f in grab_frames().items()}
+        print("suggest mode: the model's answer is blue (top view: its text) - A = accept, or do your own step "
+              "(that one is what gets recorded); G = ask again, N = forget its history (R does it too)")
+        ask_model()
+
+    def after_move():
+        """Where the arm went: state, sliders; the wrist / base click rays were for the old pose."""
+        joints = real_now()
+        st["q_now"], st["t_read"], st["joints"] = real_to_sim(joints, jm, env.q_home), time.time(), joints
+        panel.sync({**joints, "gripper": grip})
+        st["clicks"].pop("wrist", None)
+        st["clicks"].pop("base", None)
+        ask_model()
+
+    def do_nudge(name, d):
+        """Arrow key: one small step of the gripper point (no ENTER: a step is 1 / 3 cm and checked like a plan)."""
+        step = NUDGE_STEPS[st["big_step"]]
+        q, target, why = plan_nudge(env, kin, current_q(), d, step)
+        if why:
+            print(f"nudge {name} refused: {why}")
+            log("nudge", direction=name, step=step, ok=False, reason=why)
+            return
+        if st["plan"]:
+            print("  nudge: plan cleared (it was for the old pose)")
+        st["plan"] = []
+        log("nudge", direction=name, step=step, ok=True, target=target)
+        send(f"nudge {name} {step * 100:.0f} cm", q, target)
+        after_move()
+
+    def accept_model():
+        """A: do what the model said - a click is placed like yours (then SPACE / D / ENTER as usual), a gripper
+        answer is sent like X / O."""
+        s = sugg.take()
+        if s is None:
+            print("no model answer yet" + (" (thinking ...)" if sugg.thinking() else ": G = ask"))
+            return
+        if s["label"] is None:
+            print(f"model answer not understood: {s['text']!r} - G = ask again")
+            return
+        log("suggest_accept", label=s["label"], x=s["x"], y=s["y"], text=s["text"])
+        lab = s["label"]
+        if lab.startswith("click_"):
+            cam = lab[len("click_"):]
+            w, h = sugg.history.sizes[cam]
+            handler = {"top": on_top, "wrist": on_wrist, "base": on_base}[cam]
+            handler(cv2.EVENT_LBUTTONDOWN, int(round(s["x"] * w * SHOW[cam])), int(round(s["y"] * h * SHOW[cam])),
+                    0, None)
+            print(f"  model's {cam} click placed - SPACE / D = plan, ENTER = move (or click yourself to change it)")
+        elif lab in ("gripper_close", "gripper_open"):
+            set_gripper(REAL_GRIPPER_CLOSED if lab == "gripper_close" else REAL_GRIPPER_OPEN, "model")
+        else:
+            print("model says: done" + (" - R = end + save the episode" if rec is not None and rec.active else ""))
 
     try:
         while True:
@@ -856,12 +1110,32 @@ def main():
                 cv2.imshow(DASH_WIN, compose(views))
             if rec is not None and rec.active:
                 rec.add(rec_views(frames, views), state=st["joints"], action=cmd)
+            if sugg is not None:
+                if st["ask_at"] is not None and time.time() >= st["ask_at"]:
+                    st["ask_at"] = None
+                    sugg.ask(grab_frames(), float(real_now().get("gripper", grip)), SHOW)
+                s = sugg.poll()
+                if s is not None:
+                    print(f"model: {s['text']}  ({s['seconds']:.1f} s)  A = accept")
+                    log("suggest", text=s["text"], label=s["label"], x=s["x"], y=s["y"], seconds=s["seconds"],
+                        gripper_now=s["gripper_now"], recent=s["recent"])
 
-            key = cv2.waitKey(1) & 0xFF
+            code = st["key_next"] if st["key_next"] is not None else cv2.waitKeyEx(1)
+            st["key_next"] = None
+            nudge = NUDGE_KEYS.get(code & 0xFFFF) if code != -1 else None
+            key = 255 if code == -1 or nudge else code & 0xFF   # as cv2.waitKey(1) & 0xFF before
             panel.poll()
             if not args.windows and cv2.getWindowProperty(DASH_WIN, cv2.WND_PROP_VISIBLE) < 1:
                 break                                           # the window was closed with its X
-            if key in (ord("q"), 27):
+            if nudge is not None:
+                do_nudge(*nudge)
+                k = cv2.waitKeyEx(1)          # an arrow pressed during the step (key repeat) is dropped: it stops
+                if k != -1 and (k & 0xFFFF) not in NUDGE_KEYS:  # when you let go; another key is kept
+                    st["key_next"] = k
+            elif key == ord("s"):
+                st["big_step"] = not st["big_step"]
+                print(f"arrow step: {NUDGE_STEPS[st['big_step']] * 100:.0f} cm")
+            elif key in (ord("q"), 27):
                 break
             elif key == ord(" "):
                 st["plan"] = plan("hover")
@@ -885,16 +1159,24 @@ def main():
                     if not send(name, q, pos):
                         break
                 st["plan"] = []
-                joints = real_now()
-                st["q_now"], st["t_read"], st["joints"] = real_to_sim(joints, jm, env.q_home), time.time(), joints
-                panel.sync({**joints, "gripper": grip})         # sliders := where the arm went
-                st["clicks"].pop("wrist", None)                 # its ray used the old wrist camera pose
-                st["clicks"].pop("base", None)                  # ... and this one the old shoulder_pan
+                after_move()                                    # sliders, state; old wrist / base rays dropped
+            elif key == ord("a") and sugg is not None:
+                accept_model()
+            elif key == ord("g") and sugg is not None:
+                ask_model()
+            elif key == ord("n") and sugg is not None:
+                sugg.history.reset()
+                print("model history forgotten (as at an episode start)")
+                ask_model()
             elif key in (ord("x"), ord("o")):
                 set_gripper(*((REAL_GRIPPER_CLOSED, "X key") if key == ord("x") else (REAL_GRIPPER_OPEN, "O key")))
+            elif key == ord("m"):
+                st["snap"] = not st["snap"]
+                print(f"snap top clicks: {'on' if st['snap'] else 'off'}")
             elif key == ord("c"):
                 log("clear")
                 st["clicks"].clear()
+                st["snapped"] = None
                 update_goal()
             elif key == ord("p"):
                 st["surface"] = (st["surface"] + 1) % len(SURFACES)
@@ -910,6 +1192,7 @@ def main():
                         clicks={cam: c[:2] for cam, c in st["clicks"].items()}, held=held, speed=args.speed)
                     print(f"REC episode {idx:03d} -> {d}   (R = end + save, B = throw away)")
                     set_gripper(REAL_GRIPPER_OPEN, "episode start")     # every episode starts with the gripper open
+                    ask_model()
                 else:
                     d, n = rec.stop(keep=True)
                     print(f"saved episode: {d} ({n} frames)")
