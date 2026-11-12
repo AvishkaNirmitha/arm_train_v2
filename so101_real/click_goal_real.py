@@ -36,6 +36,7 @@ Keys (in a camera window):
     C           clear clicks and plan                  H      plan: back to the parked pose
     R           (--record) start / end + save an episode   B  (--record) throw the running episode away
     A           (--suggest) do the model's answer          G  (--suggest) ask the model again
+    F           (--suggest) = A, then D: accept the model's click and plan down (ENTER still moves)
     N           (--suggest) forget the model's history
     arrows      move the gripper point 1 cm as seen in the top view (up = up in the picture), at the same height
     PgUp / PgDn move it 1 cm up / down                 S      arrow step 1 cm <-> 3 cm
@@ -127,7 +128,7 @@ CORRECT_TOL_DEG = 0.7            # a motor further off its target than this gets
 CORRECT_MAX_DEG = 5.0            # command at most this far beyond the target
 CORRECT_ROUNDS = 2
 SUGGEST_LORA = os.path.join(HERE, "checkpoints", "qwen35_2b_so101_decide_v1_colab", "lora")
-SUGGEST_HELP = "A accept the model's answer (blue)   G ask the model again   N forget its history"
+SUGGEST_HELP = "A accept the model's answer (blue)   F = A + D (plan down)   G ask again   N forget history"
 SUGGEST_COLOR = (255, 155, 45)   # BGR: the model's point / answer (blue, as on the eval page)
 SUGGEST_SETTLE = 0.4             # s after the arm stopped before the pictures for the model are taken
 
@@ -1070,10 +1071,10 @@ def main():
         s = sugg.take()
         if s is None:
             print("no model answer yet" + (" (thinking ...)" if sugg.thinking() else ": G = ask"))
-            return
+            return None
         if s["label"] is None:
             print(f"model answer not understood: {s['text']!r} - G = ask again")
-            return
+            return None
         log("suggest_accept", label=s["label"], x=s["x"], y=s["y"], text=s["text"])
         lab = s["label"]
         if lab.startswith("click_"):
@@ -1087,6 +1088,7 @@ def main():
             set_gripper(REAL_GRIPPER_CLOSED if lab == "gripper_close" else REAL_GRIPPER_OPEN, "model")
         else:
             print("model says: done" + (" - R = end + save the episode" if rec is not None and rec.active else ""))
+        return lab
 
     try:
         while True:
@@ -1162,6 +1164,17 @@ def main():
                 after_move()                                    # sliders, state; old wrist / base rays dropped
             elif key == ord("a") and sugg is not None:
                 accept_model()
+            elif key == ord("f") and sugg is not None:         # = A, then D (a click answer only)
+                lab = accept_model()
+                if lab is not None and lab.startswith("click_"):
+                    if not args.allow_down:
+                        print("F: the click is placed, but D needs --allow-down")
+                    elif st["goal"] is None:
+                        print("F: the click gave no goal - not planned")
+                    else:
+                        st["plan"] = plan("down")
+                        if st["plan"]:
+                            print("  F: planned down (magenta) - ENTER = move")
             elif key == ord("g") and sugg is not None:
                 ask_model()
             elif key == ord("n") and sugg is not None:
