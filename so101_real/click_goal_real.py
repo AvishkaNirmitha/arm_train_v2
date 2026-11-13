@@ -629,11 +629,13 @@ def main():
             st["snapped"] = None
             if st["snap"]:                                   # the block / pad next to the click (snap_top.py)
                 r = snap_click(grabbers["top"].get(), u, v, topcam, poly, SURFACES[st["surface"]][1], arm_offset)
-                extra = {"raw_u": u, "raw_v": v, "snap": r["kind"], "snap_mm": r["dist_mm"], "snap_iou": r["iou"]}
+                extra = {"raw_u": u, "raw_v": v, "snap": r["kind"], "snap_mm": r["dist_mm"], "snap_iou": r["iou"],
+                         "snap_tag": r["tag"]}
                 if r["kind"] is not None:
                     u, v = float(r["pixel"][0]), float(r["pixel"][1])
                     st["snapped"] = r
                     print(f"snapped to the {r['kind']} ({r['dist_mm']:.0f} mm from the click"
+                          + (f", ArUco tag {r['tag']}" if r["tag"] is not None else "")
                           + (f", fit {r['iou']:.2f}" if r["iou"] is not None else "") + ")")
                 else:
                     print(f"  no snap: {r['why']} - the click is used as it is")

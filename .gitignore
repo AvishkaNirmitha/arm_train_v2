@@ -22,6 +22,7 @@ unsloth_compiled_cache/
 # /so_101_arm/simulation_URDF/Assets/media/*
 /so_101_arm/simulation_URDF/*
 
+depth_Cam/calib_pairs
 
 
 /so101_real/captures

@@ -4,6 +4,10 @@ A click (yours or the decision model's) only has to say roughly where; the exact
   * white block (on the dark mat): a 3 x 3 x 5 cm box is fitted to its white blob - x, y and the turn that make the
     box's outline in the picture match the blob best. The camera sees the block a little from the side, so the
     blob's middle is not the top face's middle; the box fit gets the top face right.
+  * ArUco tag on the block's top (any tag of make_aruco_sheet.py except the gripper's ID 0 and the table IDs 10-13,
+    at its printed size): when the camera reads it, the tag gives the top face's middle and turn directly (its 4
+    corners, on the top face's height) - no box fit needed. The tag must be centred on the top face.
+    Tags win over the box fit; the box fit is the fallback (the tag's dark middle is filled in for it).
   * green pad: the middle of the green blob, on the table.
 Then the arm offset is added (top_arm_offset.json, fit_top_offset.py): where the arm really has to go is ~2 cm
 from where the top camera sees the object (the top camera's frame and the arm's disagree by a constant shift, the
@@ -25,6 +29,9 @@ PAD_Z = 0.003                    # the green pad's top (on the table or the mat:
 SNAP_MAX_MM = 40.0               # the click this far (on the table) from the object at most
 MIN_IOU = 0.6                    # box fit quality needed (outline vs. blob overlap)
 FIT_WIDTH = 720                  # pictures are fitted at this width (faster; ~0.9 mm per pixel)
+NOT_CUBE_TAGS = {0, 10, 11, 12, 13}   # gripper / table tags (make_aruco_sheet.py page 1)
+INK_BELOW_MAT = 15               # a tag's black ink: this much darker than the mat (brightness 0..255)
+TAG_SIZE_TOL = 0.25              # a tag measured more than 25 % off its printed size is not flat on a block top
 OFFSET_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "top_arm_offset.json")
 
 
@@ -88,6 +95,15 @@ def masks(img, cam, mat_poly):
     white = ((s <= 70) & (v >= max(150, mat_v + 60)) & (area > 0)).astype(np.uint8) * 255
     white = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    # a tag on a block top: its black ink (darker than the mat) inside the blob's convex hull becomes block too (the
+    # white ring around the tag may be broken). Only the ink: a grey, shadowed top face is not filled in, so a half-seen
+    # block still fails the fit check.
+    hull = np.zeros_like(white)
+    for c in cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        cv2.fillConvexPoly(hull, cv2.convexHull(c), 255)
+    ink = (hull > 0) & (v < mat_v - INK_BELOW_MAT)
+    white[ink] = 255
+    white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     return white, green
 
 
@@ -142,11 +158,57 @@ def fit_block(blob_mask, cam):
     return x, y, yaw % (np.pi / 2), q
 
 
+_detector = None
+
+
+_sizes = None
+
+
+def tag_sizes():
+    """{id: printed mm} of the cube tags (make_aruco_sheet.py)."""
+    global _sizes
+    if _sizes is None:
+        from make_aruco_sheet import printed_sizes
+        _sizes = {i: s for i, s in printed_sizes().items() if i not in NOT_CUBE_TAGS}
+    return _sizes
+
+
+def find_cube_tags(img, cam, rejected=False):
+    """ArUco tags on block tops in img (cam = TopCam for img's size). Returns a list of dicts: id, corners (4 x 2
+    img pixels), x, y (top face middle, m), yaw (rad, 0..90 deg like fit_block), size_mm (measured edge, on the
+    block-top plane), printed_mm. rejected=True: also the tags seen but not used, with "why"."""
+    global _detector
+    sizes = tag_sizes()
+    if _detector is None:
+        prm = cv2.aruco.DetectorParameters()
+        prm.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        _detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), prm)
+    gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    corners, found, _ = _detector.detectMarkers(gray)
+    out = []
+    for c, i in zip(corners, [] if found is None else found.ravel()):
+        i, c = int(i), c[0].astype(float)
+        P = np.array([cam.on_plane(u, v, BLOCK_TOP)[:2] for u, v in c])         # the corners on the top face
+        edges = np.linalg.norm(P - np.roll(P, -1, 0), axis=1) * 1000
+        e = P[1] - P[0]                                                          # the tag's top edge
+        t = {"id": i, "corners": c, "x": float(P[:, 0].mean()), "y": float(P[:, 1].mean()),
+             "yaw": float(np.arctan2(e[1], e[0]) % (np.pi / 2)), "size_mm": round(float(edges.mean()), 1),
+             "printed_mm": sizes.get(i), "why": None}
+        if i not in sizes:
+            t["why"] = "gripper / table tag" if i in NOT_CUBE_TAGS else "not on make_aruco_sheet.py"
+        elif abs(edges.mean() / sizes[i] - 1) > TAG_SIZE_TOL:
+            t["why"] = f"measures {edges.mean():.0f} mm, printed {sizes[i]:g}: not flat on a block top"
+        if t["why"] is None or rejected:
+            out.append(t)
+    return out
+
+
 def snap(img, u, v, cam, mat_poly, surface_z=BLOCK_TOP, arm_offset=(0.0, 0.0), max_mm=SNAP_MAX_MM):
     """The object nearest the click (u, v) in img (any size; cam and mat_poly for that size).
     Returns a dict: kind ('block' / 'pad' / None), point (3-D, as the top camera sees it), goal (point + arm_offset),
     pixel (to click so that the ray with the surface at surface_z hits goal's x, y; img pixels), dist_mm (click ->
-    object, before the offset), iou (block fit), outline (block corners in img pixels), why (if None)."""
+    object, before the offset), iou (block fit), outline (block corners in img pixels), tag (cube tag ID if the
+    block came from its ArUco tag, else None), why (if None)."""
     H, W = img.shape[:2]
     s = min(1.0, FIT_WIDTH / W)
     small = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else img
@@ -158,7 +220,19 @@ def snap(img, u, v, cam, mat_poly, surface_z=BLOCK_TOP, arm_offset=(0.0, 0.0), m
     min_area = 0.4 * cv2.contourArea(np.float32(face))
     cands = [("block", b, _dist_px(b, us, vs)) for b in _blobs(white, min_area)]
     cands += [("pad", b, _dist_px(b, us, vs)) for b in _blobs(green, 4 * min_area)]
-    out = {"kind": None, "point": None, "goal": None, "pixel": None, "dist_mm": None, "iou": None, "outline": None}
+    out = {"kind": None, "point": None, "goal": None, "pixel": None, "dist_mm": None, "iou": None, "outline": None,
+           "tag": None}
+    # 1) a tag on a block top near the click: exact, no fitting
+    tags = find_cube_tags(img, cam)
+    if tags:
+        click = cam.on_plane(u, v, BLOCK_TOP)[:2]
+        t = min(tags, key=lambda t: np.hypot(t["x"] - click[0], t["y"] - click[1]))
+        d = float(np.hypot(t["x"] - click[0], t["y"] - click[1])) * 1000
+        if d <= max_mm:
+            P = np.array([t["x"], t["y"], BLOCK_TOP])
+            out.update(tag=t["id"], dist_mm=round(d, 1), outline=cam.project(_box_corners(t["x"], t["y"], t["yaw"])))
+            return _finish(out, "block", P, cam, arm_offset, surface_z)
+    # 2) no tag near: the white blob / green pad
     if not cands:
         out["why"] = "no white block or green pad found"
         return out
@@ -181,8 +255,12 @@ def snap(img, u, v, cam, mat_poly, surface_z=BLOCK_TOP, arm_offset=(0.0, 0.0), m
     if out["dist_mm"] > max_mm:
         out["why"] = f"nearest {kind} is {out['dist_mm']:.0f} mm from the click (max {max_mm:.0f})"
         return out
+    return _finish(out, kind, P, cam, arm_offset, surface_z)
+
+
+def _finish(out, kind, P, cam, arm_offset, surface_z):
+    """Add the arm offset; the pixel (img size) whose ray at surface_z hits the goal's x, y."""
     goal = P + np.array([arm_offset[0], arm_offset[1], 0.0])
     z = BLOCK_TOP if surface_z is None else surface_z
-    px = cs.project(np.array([goal[0], goal[1], z]))[0]
-    out.update(kind=kind, point=P, goal=goal, pixel=(px + 0.5) / s - 0.5)
+    out.update(kind=kind, point=P, goal=goal, pixel=cam.project(np.array([goal[0], goal[1], z]))[0])
     return out
